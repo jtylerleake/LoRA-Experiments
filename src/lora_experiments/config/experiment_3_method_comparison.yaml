@@ -1,0 +1,18 @@
+experiment: exp3_method_comparison
+description: >
+  Same model and task, compare full fine-tuning, bottleneck adapters,
+  prefix tuning, and LoRA side by side.
+model:
+  name: qwen2.5-0.5b-instruct
+dataset: TODO_dataset_name
+output_subdir: exp3_method_comparison
+seed: 42
+methods:
+  - type: full_ft
+  - type: adapters
+  - type: prefix_tuning
+    num_virtual_tokens: 20
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, v_proj]

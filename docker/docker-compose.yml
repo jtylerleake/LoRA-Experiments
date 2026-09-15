@@ -1,0 +1,13 @@
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    volumes:
+      - ..:/workspace
+    working_dir: /workspace
+    environment:
+      - PYTHONPATH=/workspace/src
+    stdin_open: true
+    tty: true
+    command: bash

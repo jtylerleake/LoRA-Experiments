@@ -1,0 +1,35 @@
+experiment: exp1_rank_ablation
+description: >
+  Fine-tune the same model on the same task with LoRA at different ranks,
+  plus a full fine-tuning baseline, to see how rank affects quality.
+model:
+  name: qwen2.5-0.5b-instruct
+dataset: TODO_dataset_name
+output_subdir: exp1_rank_ablation
+seed: 42
+methods:
+  - type: full_ft
+  - type: lora
+    rank: 1
+    alpha: 2
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 2
+    alpha: 4
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 4
+    alpha: 8
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 16
+    alpha: 32
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 64
+    alpha: 128
+    target_modules: [q_proj, v_proj]

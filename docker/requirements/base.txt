@@ -1,0 +1,19 @@
+# AUTO-GENERATED placeholder — regenerate with scripts/compile_requirements.ps1
+# (pip-compile against base.in) to get a real locked/pinned set. Until then
+# this just mirrors base.in unpinned so `docker compose build` works.
+torch
+transformers
+peft
+accelerate
+bitsandbytes
+datasets
+safetensors
+numpy
+pandas
+matplotlib
+seaborn
+pydantic
+pyyaml
+ruff
+pytest
+pip-tools

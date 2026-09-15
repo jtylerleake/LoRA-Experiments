@@ -1,0 +1,34 @@
+experiment: exp2_matrix_study
+description: >
+  Fixed LoRA rank, sweep which weight matrices LoRA is applied to, to see
+  which subsets of the transformer matter most for adaptation quality.
+model:
+  name: qwen2.5-0.5b-instruct
+dataset: TODO_dataset_name
+output_subdir: exp2_matrix_study
+seed: 42
+methods:
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [v_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, k_proj, v_proj, o_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [gate_proj, up_proj, down_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]

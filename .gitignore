@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Outputs / artifacts — never commit model weights, checkpoints, or large logs
+outputs/**
+!outputs/logs/.gitkeep
+!outputs/metrics/.gitkeep
+*.ckpt
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/

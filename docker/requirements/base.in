@@ -1,0 +1,30 @@
+# Top-level dependencies. Compile with scripts/compile_requirements.ps1
+# (runs pip-compile inside Docker) into base.txt (locked, used by
+# Dockerfile.dev) and colab.txt (same libs minus the torch pin, since Colab
+# already ships a CUDA-matched torch build).
+
+# --- ML core ---
+torch
+transformers
+peft
+accelerate
+bitsandbytes
+datasets
+safetensors
+
+# --- science / numerics ---
+numpy
+pandas
+
+# --- plotting (runs locally in Docker against synced metrics, not weights) ---
+matplotlib
+seaborn
+
+# --- config / CLI ---
+pydantic
+pyyaml
+
+# --- dev tooling (also fine to ship in the same image for a single dev env) ---
+ruff
+pytest
+pip-tools

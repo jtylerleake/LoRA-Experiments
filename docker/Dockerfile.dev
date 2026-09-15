@@ -1,0 +1,29 @@
+# CPU-only development image.
+#
+# Purpose: local editing, linting, unit tests, and small CPU "dry runs" that
+# validate an experiment config wires up correctly before spending real GPU
+# time on Colab. No model weights or datasets are baked into this image.
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY docker/requirements/base.txt /tmp/base.txt
+RUN pip install --upgrade pip pip-tools && \
+    pip install -r /tmp/base.txt
+
+# Source is bind-mounted by docker-compose for live editing; this COPY is a
+# fallback so the image is still usable standalone (e.g. in CI).
+COPY . /workspace
+
+RUN pip install -e .
+
+CMD ["bash"]

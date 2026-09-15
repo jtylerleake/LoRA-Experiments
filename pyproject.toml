@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lora_experiments"
+version = "0.1.0"
+description = "Infrastructure for LoRA fine-tuning experiments (rank ablation, matrix-application study, method comparison, test-time tuning)."
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
