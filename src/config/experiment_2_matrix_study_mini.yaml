@@ -1,0 +1,46 @@
+experiment: exp2_matrix_study_mini
+description: >
+  Tiny smoke-test of experiment 2: same 6 target-module variants (fixed
+  LoRA rank 8) as experiment_2_matrix_study.yaml, but capped to a handful
+  of training examples and 1 epoch per run, so all 6 runs finish in a
+  couple of minutes on a GPU. Accuracy numbers from this config are
+  meaningless (barely any training data) — only the wiring matters.
+model:
+  name: qwen2.5-0.5b-instruct
+tasks: [sst2]
+output_subdir: exp2_matrix_study_mini
+seed: 42
+training:
+  epochs: 1
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-4
+  max_seq_length: 256
+  max_new_tokens: 64
+  eval_samples: 8
+  max_train_samples: 32
+methods:
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [v_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, k_proj, v_proj, o_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [gate_proj, up_proj, down_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]

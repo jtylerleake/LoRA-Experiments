@@ -26,6 +26,7 @@ class MethodSpec(BaseModel):
     alpha: int | None = None
     target_modules: list[str] | None = None
     num_virtual_tokens: int | None = None
+    bottleneck_size: int | None = None
     # Overrides TrainingConfig.learning_rate for this method only — full
     # fine-tuning typically needs a much smaller LR than LoRA to stay stable.
     learning_rate: float | None = None
@@ -60,7 +61,7 @@ class ExperimentConfig(BaseModel):
     training: TrainingConfig = TrainingConfig()
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "ExperimentConfig":
+    def from_yaml(cls, path: str | Path) -> ExperimentConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return cls.model_validate(data)

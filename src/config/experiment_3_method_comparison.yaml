@@ -4,12 +4,15 @@ description: >
   prefix tuning, and LoRA side by side.
 model:
   name: qwen2.5-0.5b-instruct
-tasks: [TODO_dataset_name]
+tasks: [sst2]
 output_subdir: exp3_method_comparison
 seed: 42
 methods:
   - type: full_ft
+    # Full fine-tuning needs a much smaller LR than the other methods to stay stable.
+    learning_rate: 2.0e-5
   - type: adapters
+    bottleneck_size: 64
   - type: prefix_tuning
     num_virtual_tokens: 20
   - type: lora

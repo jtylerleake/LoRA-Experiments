@@ -4,7 +4,7 @@ description: >
   which subsets of the transformer matter most for adaptation quality.
 model:
   name: qwen2.5-0.5b-instruct
-tasks: [TODO_dataset_name]
+tasks: [sst2]
 output_subdir: exp2_matrix_study
 seed: 42
 methods:

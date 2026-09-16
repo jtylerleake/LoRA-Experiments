@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from config.schema import ExperimentConfig
+from config.schema import ExperimentConfig, MethodSpec
 from data.loaders import _format_gsm8k, _format_rte, _format_sst2, get_choices
 from eval.metrics import (
     classification_accuracy,
@@ -20,6 +20,7 @@ from eval.metrics import (
     task_accuracy,
 )
 from models.registry import get_model_spec
+from training.adapters import build_adapter_model
 from training.common import CompactProgressCallback, cap_dataset
 from utils.logging_utils import file_logging
 
@@ -64,6 +65,78 @@ def test_exp1_mini_mirrors_full_structure_but_capped():
     assert mini.training.max_train_samples < 100
     assert mini.training.epochs == 1
     assert mini.output_subdir != full.output_subdir
+
+
+def test_exp2_full_and_mini_share_target_module_sweep():
+    full = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_2_matrix_study.yaml")
+    mini = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_2_matrix_study_mini.yaml")
+    assert full.tasks == mini.tasks == ["sst2"]
+    get_choices("sst2")  # raises KeyError if "sst2" isn't a registered task
+    assert all(m.type == "lora" and m.rank == 8 for m in full.methods)
+    assert [m.target_modules for m in mini.methods] == [m.target_modules for m in full.methods]
+    assert mini.training.max_train_samples is not None
+    assert mini.training.max_train_samples < 100
+    assert mini.training.epochs == 1
+    assert mini.output_subdir != full.output_subdir
+
+
+def test_exp3_full_and_mini_share_method_comparison():
+    full = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_3_method_comparison.yaml")
+    mini = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_3_method_comparison_mini.yaml")
+    assert full.tasks == mini.tasks == ["sst2"]
+    get_choices("sst2")
+    assert [m.type for m in full.methods] == ["full_ft", "adapters", "prefix_tuning", "lora"]
+    assert [m.type for m in mini.methods] == [m.type for m in full.methods]
+    assert mini.training.max_train_samples is not None
+    assert mini.training.max_train_samples < 100
+    assert mini.training.epochs == 1
+    assert mini.output_subdir != full.output_subdir
+
+
+def test_build_adapter_model_freezes_base_and_starts_as_identity():
+    import torch
+    from torch import nn
+
+    class _FakeDecoderLayer(nn.Module):
+        def __init__(self, hidden_size):
+            super().__init__()
+            self.linear = nn.Linear(hidden_size, hidden_size)
+
+        def forward(self, hidden_states):
+            return (self.linear(hidden_states),)
+
+    class _FakeInnerModel(nn.Module):
+        def __init__(self, hidden_size, num_layers):
+            super().__init__()
+            self.layers = nn.ModuleList(_FakeDecoderLayer(hidden_size) for _ in range(num_layers))
+
+    class _FakeCausalLM(nn.Module):
+        def __init__(self, hidden_size, num_layers):
+            super().__init__()
+            self.model = _FakeInnerModel(hidden_size, num_layers)
+            self.config = SimpleNamespace(hidden_size=hidden_size)
+
+        def forward(self, hidden_states):
+            for layer in self.model.layers:
+                hidden_states = layer(hidden_states)[0]
+            return hidden_states
+
+    torch.manual_seed(0)
+    fake = _FakeCausalLM(hidden_size=8, num_layers=2)
+    x = torch.randn(2, 3, 8)
+    before = fake(x)
+
+    model = build_adapter_model(fake, MethodSpec(type="adapters", bottleneck_size=4))
+
+    base_params = [p for n, p in model.named_parameters() if "bottleneck_adapters" not in n]
+    adapter_params = list(model.bottleneck_adapters.parameters())
+    assert base_params and all(not p.requires_grad for p in base_params)
+    assert adapter_params and all(p.requires_grad for p in adapter_params)
+
+    # up_proj is zero-initialized, so the adapter should be a no-op at the
+    # start of training.
+    after = model(x)
+    assert torch.allclose(before, after, atol=1e-6)
 
 
 def test_extract_final_answer_parses_gsm8k_format():
