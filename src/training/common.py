@@ -13,6 +13,7 @@ actually lost.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -134,6 +135,17 @@ def generate_predictions(
     return predictions, references
 
 
+def compute_logging_steps(num_examples: int, batch_size: int, grad_accum_steps: int, epochs: int) -> int:
+    """Pick a logging interval that scales with the run, so both a mini
+    (~8-step) and a full (hundreds/thousands-of-steps) run log ~20 points
+    for the training-curve plot. A hardcoded interval (e.g. 10) silently
+    logs nothing at all when a run has fewer total steps than that.
+    """
+    steps_per_epoch = max(1, math.ceil(num_examples / (batch_size * grad_accum_steps)))
+    total_steps = steps_per_epoch * epochs
+    return max(1, total_steps // 20)
+
+
 def training_curve_from_trainer(trainer) -> list[dict[str, float]]:
     """Extract {step, loss} points from the Trainer's log history, for Plot #3."""
     return [
@@ -178,13 +190,19 @@ def train_and_evaluate(
         train_dataset = cap_dataset(train_dataset, training_cfg.max_train_samples)
         tokenized_train = tokenize_for_causal_lm(train_dataset, tokenizer, training_cfg.max_seq_length)
 
+        logging_steps = compute_logging_steps(
+            len(tokenized_train),
+            training_cfg.per_device_train_batch_size,
+            training_cfg.gradient_accumulation_steps,
+            training_cfg.epochs,
+        )
         args = TrainingArguments(
             output_dir=str(run_dir),
             num_train_epochs=training_cfg.epochs,
             per_device_train_batch_size=training_cfg.per_device_train_batch_size,
             gradient_accumulation_steps=training_cfg.gradient_accumulation_steps,
             learning_rate=method.learning_rate or training_cfg.learning_rate,
-            logging_steps=10,
+            logging_steps=logging_steps,
             save_strategy="no",
             report_to=[],
             disable_tqdm=True,

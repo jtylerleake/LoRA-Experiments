@@ -5,6 +5,7 @@ real model weights or datasets.
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +23,7 @@ from eval.metrics import (
 )
 from models.registry import get_model_spec
 from training.adapters import build_adapter_model
-from training.common import CompactProgressCallback, cap_dataset
+from training.common import CompactProgressCallback, cap_dataset, compute_logging_steps
 from utils.logging_utils import file_logging
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "src" / "config"
@@ -275,3 +276,22 @@ def test_cap_dataset_is_noop_when_none_or_already_smaller():
     ds = Dataset.from_dict({"x": list(range(5))})
     assert len(cap_dataset(ds, None)) == 5
     assert len(cap_dataset(ds, 100)) == 5
+
+
+def test_compute_logging_steps_never_exceeds_total_steps():
+    """Regression test: a mini run (32 examples, batch 4, 1 epoch -> 8 total
+    steps) with a hardcoded logging_steps=10 never logged a single loss
+    value, since global_step never reaches a multiple of 10 -- the
+    training-curve plot came back completely blank. logging_steps must
+    always be <= the run's own total step count.
+    """
+    mini_steps = compute_logging_steps(num_examples=32, batch_size=4, grad_accum_steps=1, epochs=1)
+    assert 1 <= mini_steps <= 8
+
+    full_steps = compute_logging_steps(num_examples=7473, batch_size=8, grad_accum_steps=1, epochs=3)
+    total = math.ceil(7473 / 8) * 3
+    assert 1 <= full_steps <= total
+
+    # fewer examples than one batch should still yield a valid (>=1) interval
+    tiny_steps = compute_logging_steps(num_examples=3, batch_size=4, grad_accum_steps=1, epochs=1)
+    assert tiny_steps == 1
