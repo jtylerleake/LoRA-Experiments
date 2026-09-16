@@ -72,12 +72,6 @@ def run_method(
         raise ValueError(f"Unknown method type: {method.type!r}")
     builder = _import_builder(builder_path)
 
-    log.info(
-        "Loading model %r for task=%s method=%s",
-        config.model.name,
-        task,
-        method.model_dump(exclude_none=True),
-    )
     base_model, tokenizer = load_model_and_tokenizer(config.model.name, device=device)
     model = builder(base_model, method)
 
@@ -119,13 +113,25 @@ def main(argv=None) -> int:
         log.info("Done. Output dir: %s", output_dir)
         return 0
 
+    from tqdm.auto import tqdm
+
     from data.loaders import load_dataset
 
+    total_runs = len(config.tasks) * len(config.methods)
+    overall = tqdm(
+        total=total_runs,
+        desc="Experiment",
+        unit="run",
+        dynamic_ncols=True,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} runs [{elapsed}<{remaining}]",
+    )
     for task in config.tasks:
         dataset = load_dataset(task)
         train_dataset, eval_dataset = dataset["train"], dataset["eval"]
         for method in config.methods:
             run_method(method, task, config, train_dataset, eval_dataset, output_dir, args.device)
+            overall.update(1)
+    overall.close()
 
     log.info("Done. Output dir: %s", output_dir)
     return 0

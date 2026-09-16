@@ -4,7 +4,9 @@ real model weights or datasets.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +20,8 @@ from eval.metrics import (
     task_accuracy,
 )
 from models.registry import get_model_spec
+from training.common import CompactProgressCallback
+from utils.logging_utils import file_logging
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "src" / "config"
 EXPERIMENT_CONFIGS = sorted(CONFIG_DIR.glob("experiment_*.yaml"))
@@ -95,3 +99,35 @@ def test_format_sst2_and_rte_produce_valid_labels():
 
     rte = _format_rte({"sentence1": "A cat sat.", "sentence2": "An animal sat.", "label": 0})
     assert extract_choice_label(rte["completion"], get_choices("rte")) == "entailment"
+
+
+def test_file_logging_captures_info_messages_to_file(tmp_path):
+    log_path = tmp_path / "run.log"
+    probe = logging.getLogger("test.file_logging_probe")
+    with file_logging(log_path):
+        probe.info("hello from inside the context")
+    content = log_path.read_text(encoding="utf-8")
+    assert "hello from inside the context" in content
+
+    # After the context exits, the file handler is detached again, so
+    # further logging shouldn't keep appending to the same run's log.
+    probe.info("this should not be appended")
+    assert "this should not be appended" not in log_path.read_text(encoding="utf-8")
+
+
+def test_compact_progress_callback_logs_steps_to_file(tmp_path):
+    log_path = tmp_path / "cb.log"
+    run_logger = logging.getLogger("test.callback_run")
+    callback = CompactProgressCallback("[test] train", run_logger)
+    state = SimpleNamespace(max_steps=10, global_step=0)
+
+    with file_logging(log_path):
+        callback.on_train_begin(args=None, state=state, control=None)
+        state.global_step = 5
+        callback.on_log(args=None, state=state, control=None, logs={"loss": 1.2345, "epoch": 0.5})
+        callback.on_step_end(args=None, state=state, control=None)
+        callback.on_train_end(args=None, state=state, control=None)
+
+    content = log_path.read_text(encoding="utf-8")
+    assert "step=5" in content
+    assert "1.2345" in content

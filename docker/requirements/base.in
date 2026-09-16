@@ -23,6 +23,7 @@ seaborn
 # --- config / CLI ---
 pydantic
 pyyaml
+tqdm
 
 # --- dev tooling (also fine to ship in the same image for a single dev env) ---
 ruff

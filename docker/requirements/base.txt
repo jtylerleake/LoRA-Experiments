@@ -14,6 +14,7 @@ matplotlib
 seaborn
 pydantic
 pyyaml
+tqdm
 ruff
 pytest
 pip-tools
