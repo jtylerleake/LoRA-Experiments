@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from transformers import TrainerCallback
+
 from config.schema import ExperimentConfig, MethodSpec
 from data.loaders import get_choices, tokenize_for_causal_lm
 from eval.metrics import task_accuracy, write_metric
@@ -49,12 +51,18 @@ def cap_dataset(dataset, max_samples: int | None):
     return dataset.select(range(max_samples))
 
 
-class CompactProgressCallback:
+class CompactProgressCallback(TrainerCallback):
     """A HF Trainer callback that shows one continuously-updating tqdm bar
     (with a live wall-clock timer via tqdm's {elapsed}) instead of printing
     a line per logging step. Every step's metrics still get written to
     `run_logger` (which, under utils.logging_utils.file_logging, lands only
     in the run's log file, not the console).
+
+    Must subclass TrainerCallback: the Trainer fires many more events than
+    the four overridden below (on_epoch_begin, on_step_begin, on_evaluate,
+    ...), and TrainerCallback supplies no-op defaults for all of them —
+    without it, any un-overridden event raises AttributeError the first
+    time the Trainer calls it.
     """
 
     def __init__(self, desc: str, run_logger: logging.Logger):

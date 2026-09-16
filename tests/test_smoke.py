@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from transformers import TrainerCallback
 
 from config.schema import ExperimentConfig, MethodSpec
 from data.loaders import _format_gsm8k, _format_rte, _format_sst2, get_choices
@@ -218,6 +219,45 @@ def test_compact_progress_callback_logs_steps_to_file(tmp_path):
     content = log_path.read_text(encoding="utf-8")
     assert "step=5" in content
     assert "1.2345" in content
+
+
+_TRAINER_CALLBACK_EVENTS = [
+    "on_init_end",
+    "on_train_begin",
+    "on_epoch_begin",
+    "on_step_begin",
+    "on_substep_end",
+    "on_step_end",
+    "on_evaluate",
+    "on_predict",
+    "on_save",
+    "on_log",
+    "on_prediction_step",
+    "on_epoch_end",
+    "on_train_end",
+]
+
+
+def test_compact_progress_callback_handles_every_trainer_event(tmp_path):
+    """Regression test: a Colab run crashed with
+    `AttributeError: 'CompactProgressCallback' object has no attribute
+    'on_epoch_begin'` because the class didn't subclass TrainerCallback, so
+    it had no no-op default for events besides the four it overrides. The
+    isinstance check plus calling every known event is what would have
+    caught this before it reached a real Trainer.train() call.
+    """
+    assert issubclass(CompactProgressCallback, TrainerCallback)
+
+    log_path = tmp_path / "events.log"
+    run_logger = logging.getLogger("test.callback_events")
+    callback = CompactProgressCallback("[test] train", run_logger)
+    state = SimpleNamespace(max_steps=10, global_step=0)
+
+    with file_logging(log_path):
+        for event in _TRAINER_CALLBACK_EVENTS:
+            # metrics={} is only required by on_predict, but harmless
+            # everywhere else since every event accepts **kwargs.
+            getattr(callback, event)(args=None, state=state, control=None, metrics={})
 
 
 def test_cap_dataset_limits_size():

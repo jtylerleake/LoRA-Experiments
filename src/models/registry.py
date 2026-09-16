@@ -57,7 +57,7 @@ def load_model_and_tokenizer(name: str, device: str = "cuda"):
     model = AutoModelForCausalLM.from_pretrained(
         repo_id,
         quantization_config=quantization_config,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
         device_map="auto" if quantization_config is not None else None,
     )
     if device == "cuda" and quantization_config is None:
