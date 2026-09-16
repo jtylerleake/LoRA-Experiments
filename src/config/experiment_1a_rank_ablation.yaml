@@ -1,0 +1,51 @@
+experiment: exp1a_rank_ablation
+description: >
+  Variant of experiment 1 with the full fine-tuning baseline removed
+  entirely -- LoRA rank ablation only (1,2,4,8,16,64), same 3 tasks. Meant
+  to be run one task at a time (--task sst2 / --task rte / --task gsm8k)
+  since the full sweep is large; every invocation appends to the same
+  metrics.jsonl, so plot_results.py still aggregates across all three
+  regardless of how many separate sessions it took to produce them.
+model:
+  name: qwen2.5-0.5b-instruct
+# One model x 3 tasks x 6 LoRA ranks = 18 runs, split into 3 per-task
+# invocations of 6 runs each (see notebooks/exp1a_rank_ablation.ipynb).
+tasks:
+  - sst2
+  - rte
+  - gsm8k
+output_subdir: exp1a_rank_ablation
+seed: 42
+training:
+  epochs: 3
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-4
+  max_seq_length: 512
+  max_new_tokens: 256
+  eval_samples: 200
+methods:
+  - type: lora
+    rank: 1
+    alpha: 2
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 2
+    alpha: 4
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 4
+    alpha: 8
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 16
+    alpha: 32
+    target_modules: [q_proj, v_proj]
+  - type: lora
+    rank: 64
+    alpha: 128
+    target_modules: [q_proj, v_proj]

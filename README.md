@@ -79,22 +79,34 @@ docs/            colab_workflow.md
 
 ## Status
 
-Experiment 1 (rank ablation) is implemented end-to-end: three tasks (SST-2
-sentiment, RTE entailment, GSM8K math) x full-FT + 6 LoRA ranks = 21 runs on
-one model (`qwen2.5-0.5b-instruct`). Dataset loading/formatting, model
-loading (with optional quantization), LoRA (`peft.LoraConfig`) and
-full-fine-tune builders, a shared train/eval loop (`training/common.py`)
-that trains, scores accuracy per task, and writes `metrics.jsonl`, and
-`scripts/plot_results.py` (accuracy vs. trainable params, accuracy vs. rank,
-per-task training curves) are all in place. `--dry-run` validates config →
-model-registry → method-dispatch → output-dir wiring without touching real
-weights.
+Experiments 1-3 are implemented end-to-end on one model
+(`qwen2.5-0.5b-instruct`): dataset loading/formatting for SST-2, RTE, and
+GSM8K; model loading with optional quantization; LoRA (`peft.LoraConfig`),
+full-fine-tune, PEFT prefix-tuning, and a from-scratch bottleneck-adapter
+(PEFT has no classic adapter method) builder; a shared train/eval loop
+(`training/common.py`) that trains, scores accuracy per task, and writes
+`metrics.jsonl`; and `scripts/plot_results.py` (seaborn: accuracy vs.
+trainable params, accuracy vs. rank, a single combined training-curves
+plot across every task/method run). `--dry-run` validates config →
+model-registry → method-dispatch → output-dir wiring without touching
+real weights.
 
-Experiments 2-4 still need their method-specific pieces: adapters/prefix
-tuning (`training/adapters.py`, `training/prefix_tuning.py`) are stubs for
-experiment 3, `data/arc_agi.py` and `training/test_time_tuning.py` are stubs
-for experiment 4, and `scripts/sync_outputs.py` (pulling metrics back from
-Drive) is still a stub pending the first real Colab run.
+- **Experiment 1** (rank ablation): 3 tasks x (full-FT + 6 LoRA ranks) = 21 runs.
+- **Experiment 1-A**: experiment 1 with full-FT removed (LoRA ranks only),
+  run one task at a time via `run_experiment.py --task <name>` so a large
+  sweep can be split across several Colab sessions and still aggregate
+  into one `metrics.jsonl` — see `docs/colab_workflow.md`.
+- **Experiment 2** (matrix application study): 6 LoRA target-module variants on SST-2.
+- **Experiment 3** (method comparison): full-FT, bottleneck adapters, prefix tuning, LoRA on SST-2.
+- Every experiment above has a `_mini` config + notebook (a handful of
+  training examples, 1 epoch) that smoke-tests the full pipeline in
+  minutes before committing GPU time to the real sweep.
+
+**Experiment 4** (test-time tuning on ARC-AGI-style tasks) is still a stub:
+`data/arc_agi.py` and `training/test_time_tuning.py` raise
+`NotImplementedError`. `scripts/sync_outputs.py` (pulling metrics back from
+Drive automatically) is also still a stub — downloading `metrics.jsonl` by
+hand from Drive is the current substitute.
 
 ## Note on the LoRA library
 

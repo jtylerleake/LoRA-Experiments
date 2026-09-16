@@ -52,6 +52,17 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Validate config/model/method resolution without loading real weights or training.",
     )
     parser.add_argument("--output-root", default="outputs", help="Root dir for run artifacts.")
+    parser.add_argument(
+        "--task",
+        default=None,
+        help=(
+            "Restrict this invocation to a single task from the config's `tasks` list "
+            "(runs every task if omitted). Every invocation writes to the same "
+            "metrics.jsonl, so splitting a large sweep into one Colab cell per task "
+            "(different sessions, resumable if one disconnects) still aggregates "
+            "correctly when scripts/plot_results.py reads it afterward."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -92,14 +103,20 @@ def main(argv=None) -> int:
     config = ExperimentConfig.from_yaml(args.config)
     set_seed(config.seed)
 
+    tasks = config.tasks
+    if args.task is not None:
+        if args.task not in config.tasks:
+            raise ValueError(f"--task {args.task!r} is not one of this config's tasks: {config.tasks}")
+        tasks = [args.task]
+
     log.info("Loaded experiment %r: %s", config.experiment, config.description.strip())
-    log.info("Model: %s | Tasks: %s | Device: %s", config.model.name, config.tasks, args.device)
+    log.info("Model: %s | Tasks: %s | Device: %s", config.model.name, tasks, args.device)
 
     output_dir = Path(args.output_root) / config.output_subdir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if args.dry_run:
-        for task in config.tasks:
+        for task in tasks:
             for method in config.methods:
                 builder_path = METHOD_BUILDERS.get(method.type)
                 if builder_path is None:
@@ -117,7 +134,7 @@ def main(argv=None) -> int:
 
     from data.loaders import load_dataset
 
-    total_runs = len(config.tasks) * len(config.methods)
+    total_runs = len(tasks) * len(config.methods)
     overall = tqdm(
         total=total_runs,
         desc="Experiment",
@@ -125,7 +142,7 @@ def main(argv=None) -> int:
         dynamic_ncols=True,
         bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} runs [{elapsed}<{remaining}]",
     )
-    for task in config.tasks:
+    for task in tasks:
         dataset = load_dataset(task)
         train_dataset, eval_dataset = dataset["train"], dataset["eval"]
         for method in config.methods:

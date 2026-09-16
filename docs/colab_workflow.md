@@ -65,11 +65,40 @@ starting the real sweep. Accuracy numbers from the mini run are meaningless
 ## Plotting results
 
 `scripts/plot_results.py --metrics <path/to/metrics.jsonl>` reads a run's
-metrics and writes the three experiment-1 plots (accuracy vs. trainable
-params, accuracy vs. rank, per-task training curves). Since Drive is already
-mounted in Colab, it's simplest to run this directly against the
-Drive-mounted `metrics.jsonl` there (see the cell in
-`notebooks/exp1_rank_ablation.ipynb`) rather than syncing first.
+metrics and writes three plots built with seaborn: accuracy vs. trainable
+params, accuracy vs. rank, and a single combined training-curves plot
+overlaying every task/rank/method run (x-axis normalized to % of training
+complete, y-axis log-scaled, since different tasks can have very different
+dataset sizes and loss magnitudes). Since Drive is already mounted in
+Colab, it's simplest to run this directly against the Drive-mounted
+`metrics.jsonl` there (see the cell in `notebooks/exp1_rank_ablation.ipynb`)
+rather than syncing first. It reads whatever rows are in `metrics.jsonl`
+regardless of how many separate `run_experiment.py` invocations wrote
+them — see "Running experiment 1-A piecemeal" below.
+
+## Running experiment 1-A piecemeal
+
+`experiment_1a_rank_ablation.yaml` is experiment 1 with the full
+fine-tuning baseline removed (LoRA ranks only). Since the full sweep is
+still large, `notebooks/exp1a_rank_ablation.ipynb` splits it into three
+cells — one per task — using `run_experiment.py --task <name>` to restrict
+a single invocation to just that task:
+```bash
+!python scripts/run_experiment.py \
+    --config src/config/experiment_1a_rank_ablation.yaml \
+    --task sst2 \
+    --device cuda \
+    --output-root /content/drive/MyDrive/lora_experiments_outputs
+```
+Every invocation appends to the same `metrics.jsonl`, so the three cells
+can run in the same session or three separate ones (if Colab disconnects
+partway through, you only lose the currently-running task, not the whole
+sweep) — the notebook's final plotting cell reads the shared file and
+aggregates across whichever tasks have completed so far, the same as if
+they'd all run in one invocation. `experiment_1a_rank_ablation_mini.yaml`
++ `notebooks/exp1a_rank_ablation_mini.ipynb` smoke-test this same
+per-task-split-then-aggregate flow in a couple of minutes before
+committing to the full sweep.
 
 ## Getting results back locally
 

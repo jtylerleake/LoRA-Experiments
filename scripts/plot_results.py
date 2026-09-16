@@ -10,8 +10,17 @@ for a clean, consistent look:
      separate marker per task since its parameter count dwarfs every LoRA rank.
   2. accuracy_vs_rank.png — eval accuracy (y) vs. LoRA rank (x), one curve
      per task (full-FT has no rank, so it isn't part of this plot).
-  3. training_curves_<task>.png (one per task) — training loss vs. step,
-     overlaying every rank/method run for that task.
+  3. training_curves.png — a single combined plot overlaying every
+     task/rank/method run's training loss. The x-axis is normalized to %
+     of training complete rather than raw step count, since different
+     tasks in the same experiment can have very different dataset sizes
+     (e.g. sst2's ~67k examples vs. rte's ~2.5k) and therefore very
+     different total step counts — plotting raw steps would squash a
+     short task's whole curve into a sliver at the left of a long task's
+     x-range. The y-axis (loss) is log-scaled since magnitudes can differ
+     substantially across task types (e.g. classification vs. open-ended
+     generation). Color encodes method/rank; line style (solid/dashed/
+     dotted) encodes task.
 
 Colors follow a validated categorical/ordinal palette (see the dataviz
 skill): task identity uses three fixed categorical hues; LoRA rank uses a
@@ -28,6 +37,7 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import pandas as pd
 import seaborn as sns
 
@@ -37,6 +47,9 @@ RANK_RAMP = {1: "#86b6ef", 2: "#6da7ec", 4: "#3987e5", 8: "#2a78d6", 16: "#1c5ca
 FULL_FT_COLOR = "#eb6834"  # distinct accent, off the rank ramp
 CURVE_LABEL_ORDER = ["full_ft"] + [f"rank {r}" for r in sorted(RANK_RAMP)]
 CURVE_PALETTE = {"full_ft": FULL_FT_COLOR, **{f"rank {r}": c for r, c in RANK_RAMP.items()}}
+# (on, off) dash tuples per task for the combined training-curve plot, since
+# color there is already spent on method/rank.
+TASK_DASHES = {"sst2": (1, 0), "rte": (4, 1.5), "gsm8k": (1, 1)}
 
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
@@ -87,13 +100,18 @@ def _present(order: list[str], values) -> list[str]:
     return [v for v in order if v in values]
 
 
-def _finish(ax, title: str, xlabel: str, ylabel: str) -> None:
+def _finish(ax, title: str, xlabel: str, ylabel: str, legend_outside: bool = False) -> None:
     ax.set_title(title, color=INK, fontweight="bold")
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     sns.despine(ax=ax)
     if ax.get_legend() is not None:
-        sns.move_legend(ax, "best", frameon=False, title=None)
+        if legend_outside:
+            # A two-section (hue + style) legend has enough rows that "best"
+            # placement ends up overlapping the data instead of avoiding it.
+            sns.move_legend(ax, "upper left", bbox_to_anchor=(1.02, 1), frameon=False, title=None)
+        else:
+            sns.move_legend(ax, "best", frameon=False, title=None)
 
 
 def plot_accuracy_vs_trainable_params(df: pd.DataFrame, out_path: Path) -> None:
@@ -170,12 +188,21 @@ def plot_accuracy_vs_rank(df: pd.DataFrame, out_path: Path) -> None:
 
 
 def _explode_training_curves(df: pd.DataFrame) -> pd.DataFrame:
+    """Long-format {task, run_name, label, step, progress, loss} rows.
+
+    `progress` is `step` divided by that run's own final logged step (its
+    last log_history entry, effectively "end of training") — used as the
+    x-axis for the combined plot so runs with very different total step
+    counts (different dataset sizes, e.g. sst2 vs. rte) overlay on the same
+    0-100% scale instead of raw step counts distorting the comparison.
+    """
     rows = []
     for _, row in df.iterrows():
         curve = row.get("training_curve") or []
         if not curve:
             continue
         label = "full_ft" if row["method_type"] == "full_ft" else f"rank {int(row['method_rank'])}"
+        final_step = curve[-1]["step"] or 1
         for point in curve:
             rows.append(
                 {
@@ -183,37 +210,45 @@ def _explode_training_curves(df: pd.DataFrame) -> pd.DataFrame:
                     "run_name": row["run_name"],
                     "label": label,
                     "step": point["step"],
+                    "progress": point["step"] / final_step,
                     "loss": point["loss"],
                 }
             )
     return pd.DataFrame(rows)
 
 
-def plot_training_curves(df: pd.DataFrame, out_dir: Path) -> None:
+def plot_training_curves(df: pd.DataFrame, out_path: Path) -> None:
     curves = _explode_training_curves(df)
     if curves.empty:
         return
 
-    for task in TASK_ORDER:
-        sub = curves[curves["task"] == task]
-        if sub.empty:
-            continue
-        fig, ax = plt.subplots(figsize=FIGSIZE)
-        sns.lineplot(
-            data=sub,
-            x="step",
-            y="loss",
-            hue="label",
-            hue_order=_present(CURVE_LABEL_ORDER, sub["label"]),
-            palette=CURVE_PALETTE,
-            linewidth=2,
-            errorbar=None,
-            ax=ax,
-        )
-        _finish(ax, f"Training curves — {task}", "Training step", "Training loss")
-        fig.tight_layout()
-        fig.savefig(out_dir / f"training_curves_{task}.png", dpi=150)
-        plt.close(fig)
+    present_tasks = _present(TASK_ORDER, curves["task"])
+    fig, ax = plt.subplots(figsize=(9, 5.5))
+    sns.lineplot(
+        data=curves,
+        x="progress",
+        y="loss",
+        hue="label",
+        hue_order=_present(CURVE_LABEL_ORDER, curves["label"]),
+        palette=CURVE_PALETTE,
+        style="task",
+        style_order=present_tasks,
+        dashes={t: TASK_DASHES[t] for t in present_tasks},
+        linewidth=2,
+        errorbar=None,
+        ax=ax,
+    )
+    ax.set_yscale("log")
+    ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
+    _finish(
+        ax,
+        "Training curves (all tasks)",
+        "Training progress",
+        "Training loss (log scale)",
+        legend_outside=True,
+    )
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -240,7 +275,7 @@ def main(argv=None) -> int:
 
     plot_accuracy_vs_trainable_params(df, out_dir / "accuracy_vs_trainable_params.png")
     plot_accuracy_vs_rank(df, out_dir / "accuracy_vs_rank.png")
-    plot_training_curves(df, out_dir)
+    plot_training_curves(df, out_dir / "training_curves.png")
 
     print(f"Wrote plots to {out_dir}")
     return 0

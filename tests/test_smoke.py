@@ -4,8 +4,11 @@ real model weights or datasets.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,8 +29,12 @@ from training.adapters import build_adapter_model
 from training.common import CompactProgressCallback, cap_dataset, compute_logging_steps
 from utils.logging_utils import file_logging
 
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "src" / "config"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_DIR = REPO_ROOT / "src" / "config"
 EXPERIMENT_CONFIGS = sorted(CONFIG_DIR.glob("experiment_*.yaml"))
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import plot_results
 
 
 def test_package_imports():
@@ -63,6 +70,29 @@ def test_exp1_mini_mirrors_full_structure_but_capped():
     assert [m.type for m in mini.methods] == [m.type for m in full.methods]
     assert [m.rank for m in mini.methods] == [m.rank for m in full.methods]
     # ...but drastically smaller so it finishes fast.
+    assert mini.training.max_train_samples is not None
+    assert mini.training.max_train_samples < 100
+    assert mini.training.epochs == 1
+    assert mini.output_subdir != full.output_subdir
+
+
+def test_exp1a_has_no_full_ft_and_mirrors_exp1_lora_ranks():
+    exp1 = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1_rank_ablation.yaml")
+    exp1a = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1a_rank_ablation.yaml")
+    assert exp1a.tasks == exp1.tasks
+    assert {m.type for m in exp1a.methods} == {"lora"}
+    exp1_ranks = sorted(m.rank for m in exp1.methods if m.type == "lora")
+    exp1a_ranks = sorted(m.rank for m in exp1a.methods)
+    assert exp1a_ranks == exp1_ranks == [1, 2, 4, 8, 16, 64]
+    assert exp1a.output_subdir != exp1.output_subdir
+
+
+def test_exp1a_mini_mirrors_full_structure_but_capped():
+    full = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1a_rank_ablation.yaml")
+    mini = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1a_rank_ablation_mini.yaml")
+    assert mini.tasks == full.tasks
+    assert [m.rank for m in mini.methods] == [m.rank for m in full.methods]
+    assert {m.type for m in mini.methods} == {"lora"}
     assert mini.training.max_train_samples is not None
     assert mini.training.max_train_samples < 100
     assert mini.training.epochs == 1
@@ -295,3 +325,137 @@ def test_compute_logging_steps_never_exceeds_total_steps():
     # fewer examples than one batch should still yield a valid (>=1) interval
     tiny_steps = compute_logging_steps(num_examples=3, batch_size=4, grad_accum_steps=1, epochs=1)
     assert tiny_steps == 1
+
+
+def _run_dry_run(config_path: Path, extra_args: list[str], tmp_path: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_experiment.py",
+            "--config",
+            str(config_path),
+            "--device",
+            "cpu",
+            "--dry-run",
+            "--output-root",
+            str(tmp_path),
+            *extra_args,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_run_experiment_task_flag_restricts_to_one_task(tmp_path):
+    result = _run_dry_run(
+        CONFIG_DIR / "experiment_1a_rank_ablation.yaml", ["--task", "rte"], tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    assert "task=rte" in output
+    assert "task=sst2" not in output
+    assert "task=gsm8k" not in output
+
+
+def test_run_experiment_rejects_unknown_task(tmp_path):
+    result = _run_dry_run(
+        CONFIG_DIR / "experiment_1a_rank_ablation.yaml", ["--task", "not_a_real_task"], tmp_path
+    )
+    assert result.returncode != 0
+    assert "not_a_real_task" in (result.stdout + result.stderr)
+
+
+def test_run_experiment_without_task_flag_runs_every_task(tmp_path):
+    result = _run_dry_run(CONFIG_DIR / "experiment_1a_rank_ablation.yaml", [], tmp_path)
+    assert result.returncode == 0, result.stderr
+    output = result.stdout + result.stderr
+    for task in ("sst2", "rte", "gsm8k"):
+        assert f"task={task}" in output
+
+
+def _fake_metrics_df():
+    import pandas as pd
+
+    records = [
+        {
+            "task": "sst2",
+            "run_name": "sst2__lora_r8",
+            "method": {"type": "lora", "rank": 8},
+            "eval_accuracy": 0.8,
+            "trainable_params": 1_000,
+            "total_params": 1_000_000,
+            "training_curve": [{"step": s, "loss": 1.0 / s} for s in range(1, 5)],
+        },
+        {
+            "task": "rte",
+            "run_name": "rte__lora_r8",
+            "method": {"type": "lora", "rank": 8},
+            "eval_accuracy": 0.6,
+            "trainable_params": 1_000,
+            "total_params": 1_000_000,
+            # a much shorter run, e.g. a smaller dataset -- this is exactly
+            # the case progress-normalization exists for.
+            "training_curve": [{"step": s, "loss": 1.5 / s} for s in range(1, 3)],
+        },
+    ]
+    return pd.json_normalize(records, sep="_")
+
+
+def test_explode_training_curves_normalizes_progress_per_run():
+    df = _fake_metrics_df()
+    curves = plot_results._explode_training_curves(df)
+
+    sst2_curve = curves[curves["run_name"] == "sst2__lora_r8"].sort_values("step")
+    assert sst2_curve["progress"].tolist() == pytest.approx([0.25, 0.5, 0.75, 1.0])
+
+    rte_curve = curves[curves["run_name"] == "rte__lora_r8"].sort_values("step")
+    assert rte_curve["progress"].tolist() == pytest.approx([0.5, 1.0])
+
+    # Both runs' curves now span the same 0-1 x-range despite very
+    # different total step counts (4 vs. 2) -- that's the whole point.
+    assert sst2_curve["progress"].max() == rte_curve["progress"].max() == 1.0
+
+
+def test_plot_results_produces_one_combined_training_curves_file(tmp_path):
+    metrics_path = tmp_path / "metrics.jsonl"
+    records = [
+        {
+            "experiment": "fake",
+            "task": task,
+            "run_name": f"{task}__lora_r{rank}",
+            "method": {"type": "lora", "rank": rank},
+            "eval_accuracy": 0.5,
+            "trainable_params": rank * 1000,
+            "total_params": 1_000_000,
+            "training_curve": [{"step": s, "loss": 1.0 / s} for s in range(1, 4)],
+        }
+        for task in ("sst2", "rte")
+        for rank in (1, 8)
+    ]
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(record) + "\n" for record in records)
+
+    out_dir = tmp_path / "plots"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/plot_results.py",
+            "--metrics",
+            str(metrics_path),
+            "--output-dir",
+            str(out_dir),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (out_dir / "accuracy_vs_trainable_params.png").exists()
+    assert (out_dir / "accuracy_vs_rank.png").exists()
+    assert (out_dir / "training_curves.png").exists()
+    # the old per-task files should no longer be produced
+    assert not (out_dir / "training_curves_sst2.png").exists()
+    assert not (out_dir / "training_curves_rte.png").exists()
