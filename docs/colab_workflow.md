@@ -26,10 +26,16 @@ environment that installs the same pinned dependencies from
    ```
 4. **Install dependencies on top of Colab's preinstalled, CUDA-matched
    torch** — do not `pip install torch` here, it can break Colab's CUDA
-   setup:
+   setup. Also remove Colab's preinstalled `torchao` (a quantization
+   library we don't use — our quantization backend is bitsandbytes):
+   `peft`'s LoRA module dispatcher probes every optional backend including
+   torchao, and its version check *raises* instead of skipping when
+   torchao is present but older than that `peft` release expects,
+   crashing `get_peft_model()` entirely on Colab's default image.
    ```bash
    !pip install -q -r docker/requirements/colab.txt
    !pip install -q -e .
+   !pip uninstall -y -q torchao
    ```
 5. **Run an experiment**, pointing output at Drive:
    ```bash
