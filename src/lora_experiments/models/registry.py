@@ -30,12 +30,36 @@ def get_model_spec(name: str) -> dict[str, Any]:
 def load_model_and_tokenizer(name: str, device: str = "cuda"):
     """Load a registered model + tokenizer.
 
-    Not implemented yet — real loading (transformers AutoModelForCausalLM /
-    AutoTokenizer, plus a bitsandbytes quantization config when the spec
-    calls for it) lands alongside the first real experiment run, once
-    Docker/Colab plumbing is verified end to end with a dry run.
+    Applies 4-bit/8-bit bitsandbytes quantization when the registry entry
+    calls for it (see config/models.yaml), so larger models fit on a single
+    Colab GPU.
     """
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
     spec = get_model_spec(name)
-    raise NotImplementedError(
-        f"Model loading for {name!r} ({spec['repo_id']}) not implemented yet."
+    repo_id = spec["repo_id"]
+    quantization = spec.get("quantization")
+
+    tokenizer = AutoTokenizer.from_pretrained(repo_id)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    quantization_config = None
+    if quantization in ("4bit", "8bit"):
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=quantization == "4bit",
+            load_in_8bit=quantization == "8bit",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
+
+    model = AutoModelForCausalLM.from_pretrained(
+        repo_id,
+        quantization_config=quantization_config,
+        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        device_map="auto" if quantization_config is not None else None,
     )
+    if device == "cuda" and quantization_config is None:
+        model = model.to(device)
+    return model, tokenizer

@@ -18,6 +18,12 @@ WORKDIR /workspace
 
 COPY docker/requirements/base.txt /tmp/base.txt
 RUN pip install --upgrade pip pip-tools && \
+    # CPU-only torch build: this image never trains real models (GPU training
+    # happens on Colab, see docs/colab_workflow.md), so the default CUDA
+    # build's ~2GB of bundled nvidia-* wheels would just be wasted download
+    # and disk. Installed first so base.txt's unpinned "torch" entry below is
+    # satisfied by this build instead of triggering a second, CUDA install.
+    pip install --index-url https://download.pytorch.org/whl/cpu torch && \
     pip install -r /tmp/base.txt
 
 # Source is bind-mounted by docker-compose for live editing; this COPY is a

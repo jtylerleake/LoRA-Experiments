@@ -4,7 +4,7 @@ description: >
   prefix tuning, and LoRA side by side.
 model:
   name: qwen2.5-0.5b-instruct
-dataset: TODO_dataset_name
+tasks: [TODO_dataset_name]
 output_subdir: exp3_method_comparison
 seed: 42
 methods:

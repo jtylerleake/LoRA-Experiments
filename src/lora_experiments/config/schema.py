@@ -26,6 +26,21 @@ class MethodSpec(BaseModel):
     alpha: int | None = None
     target_modules: list[str] | None = None
     num_virtual_tokens: int | None = None
+    # Overrides TrainingConfig.learning_rate for this method only — full
+    # fine-tuning typically needs a much smaller LR than LoRA to stay stable.
+    learning_rate: float | None = None
+
+
+class TrainingConfig(BaseModel):
+    epochs: int = 3
+    per_device_train_batch_size: int = 8
+    gradient_accumulation_steps: int = 1
+    learning_rate: float = 2.0e-4
+    max_seq_length: int = 512
+    max_new_tokens: int = 256
+    # Generation-based eval (exact-match on GSM8K's final answer) is much
+    # slower than training loss, so it runs on a subset of the test split.
+    eval_samples: int = 200
 
 
 class ExperimentConfig(BaseModel):
@@ -33,9 +48,12 @@ class ExperimentConfig(BaseModel):
     description: str = ""
     model: ModelSpec
     methods: list[MethodSpec]
-    dataset: str
+    # Every method in `methods` is run against every task here (a full
+    # cross-product) — a single-task experiment just lists one task.
+    tasks: list[str]
     output_subdir: str
     seed: int = 42
+    training: TrainingConfig = TrainingConfig()
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ExperimentConfig":

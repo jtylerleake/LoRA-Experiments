@@ -19,11 +19,9 @@ environment that installs the same pinned dependencies from
    from google.colab import drive
    drive.mount('/content/drive')
    ```
-3. **Get the code onto the runtime.** Until a git remote exists for this
-   repo, upload/unzip it to `/content/lora_experiments`. Once a remote is
-   set up (a separate decision — see below), replace this with:
+3. **Get the code onto the runtime** from the public GitHub remote:
    ```bash
-   !git clone <REMOTE_URL> /content/lora_experiments
+   !git clone https://github.com/jtylerleake/LoRA-Experiments.git /content/lora_experiments
    %cd /content/lora_experiments
    ```
 4. **Install dependencies on top of Colab's preinstalled, CUDA-matched
@@ -44,13 +42,23 @@ environment that installs the same pinned dependencies from
 `notebooks/colab_bootstrap.ipynb` contains exactly these cells; each
 `notebooks/expN_*.ipynb` repeats the pattern pointed at its own config.
 
+## Plotting results
+
+`scripts/plot_results.py --metrics <path/to/metrics.jsonl>` reads a run's
+metrics and writes the three experiment-1 plots (accuracy vs. trainable
+params, accuracy vs. rank, per-task training curves). Since Drive is already
+mounted in Colab, it's simplest to run this directly against the
+Drive-mounted `metrics.jsonl` there (see the cell in
+`notebooks/exp1_rank_ablation.ipynb`) rather than syncing first.
+
 ## Getting results back locally
 
-Checkpoints stay in Drive (they're large). Metrics/logs are small
-JSON-lines/CSV files written alongside them —
-`python scripts/sync_outputs.py --experiment <name> --run-id <id>` pulls
-just those into the local, gitignored `outputs/` tree so they can be
-plotted with seaborn/matplotlib inside the Docker dev container.
+Checkpoints stay in Drive (they're large). `metrics.jsonl` is a small
+JSON-lines file written alongside them — `scripts/sync_outputs.py` (still a
+stub; the intended approach is `rclone` against Drive) is meant to pull just
+that back into the local, gitignored `outputs/` tree. Until it's
+implemented, downloading `metrics.jsonl` from Drive by hand is a fine
+substitute — it's the only artifact worth syncing.
 
 ## Why Hugging Face PEFT instead of `microsoft/LoRA`
 
@@ -79,9 +87,8 @@ dynamically — you don't pick the exact GPU. The model registry
 - `gpt-oss-20b` is loaded 4-bit (bitsandbytes) to fit comfortably even on a
   T4/L4.
 
-## Open item: git remote
+## Iterating on Colab
 
-This repo isn't pushed to a remote yet. A remote (e.g. GitHub) would let
-Colab `git clone`/`git pull` instead of re-uploading a zip each session —
-worth setting up once you're ready, since creating/pushing to a remote is a
-separate, explicit step from this local scaffold.
+Since Colab clones from GitHub, a local code change isn't visible on Colab
+until it's pushed to `origin/master` — `!git pull` (or re-clone) at the top
+of a Colab session picks up new commits.

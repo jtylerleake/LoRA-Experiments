@@ -71,7 +71,7 @@ src/lora_experiments/
   eval/          metrics
   utils/         logging, seeding, Colab/Drive helpers
 notebooks/       Colab notebooks (bootstrap + one per experiment)
-scripts/         run_experiment.py, compile_requirements.ps1, sync_outputs.py
+scripts/         run_experiment.py, plot_results.py, compile_requirements.ps1, sync_outputs.py
 outputs/         gitignored local mirror of metrics/logs pulled from Drive
 tests/           unit tests run inside the Docker dev image
 docs/            colab_workflow.md
@@ -79,10 +79,22 @@ docs/            colab_workflow.md
 
 ## Status
 
-Infrastructure scaffold only — training logic in `src/lora_experiments/training/`
-and `scripts/sync_outputs.py` are stubs (`NotImplementedError`) pending the
-first real experiment implementation. `--dry-run` validates the full
-config → model-registry → method-dispatch → output-dir wiring today.
+Experiment 1 (rank ablation) is implemented end-to-end: three tasks (SST-2
+sentiment, RTE entailment, GSM8K math) x full-FT + 6 LoRA ranks = 21 runs on
+one model (`qwen2.5-0.5b-instruct`). Dataset loading/formatting, model
+loading (with optional quantization), LoRA (`peft.LoraConfig`) and
+full-fine-tune builders, a shared train/eval loop (`training/common.py`)
+that trains, scores accuracy per task, and writes `metrics.jsonl`, and
+`scripts/plot_results.py` (accuracy vs. trainable params, accuracy vs. rank,
+per-task training curves) are all in place. `--dry-run` validates config →
+model-registry → method-dispatch → output-dir wiring without touching real
+weights.
+
+Experiments 2-4 still need their method-specific pieces: adapters/prefix
+tuning (`training/adapters.py`, `training/prefix_tuning.py`) are stubs for
+experiment 3, `data/arc_agi.py` and `training/test_time_tuning.py` are stubs
+for experiment 4, and `scripts/sync_outputs.py` (pulling metrics back from
+Drive) is still a stub pending the first real Colab run.
 
 ## Note on the LoRA library
 

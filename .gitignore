@@ -34,3 +34,6 @@ Thumbs.db
 # Editors
 .vscode/
 .idea/
+
+# Claude Code session state
+.claude/

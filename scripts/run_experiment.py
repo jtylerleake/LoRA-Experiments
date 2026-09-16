@@ -16,18 +16,30 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from lora_experiments.config.schema import ExperimentConfig
+from lora_experiments.config.schema import ExperimentConfig, MethodSpec
 from lora_experiments.utils.logging_utils import get_logger
 from lora_experiments.utils.seeding import set_seed
 
 log = get_logger(__name__)
 
-METHOD_DISPATCH = {
-    "lora": "lora_experiments.training.lora",
-    "full_ft": "lora_experiments.training.full_finetune",
-    "adapters": "lora_experiments.training.adapters",
-    "prefix_tuning": "lora_experiments.training.prefix_tuning",
+# Each builder wraps a freshly loaded base model for its method and returns
+# the trainable model; training/common.py's train_and_evaluate() runs the
+# rest (train, generate, score, write metrics) the same way regardless of
+# which builder produced the model.
+METHOD_BUILDERS = {
+    "full_ft": "lora_experiments.training.full_finetune.prepare_full_finetune",
+    "lora": "lora_experiments.training.lora.build_lora_model",
+    "adapters": "lora_experiments.training.adapters.build_adapter_model",
+    "prefix_tuning": "lora_experiments.training.prefix_tuning.build_prefix_tuning_model",
 }
+
+
+def _import_builder(dotted_path: str):
+    module_name, func_name = dotted_path.rsplit(".", 1)
+    import importlib
+
+    module = importlib.import_module(module_name)
+    return getattr(module, func_name)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -43,32 +55,77 @@ def parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def run_method(
+    method: MethodSpec,
+    task: str,
+    config: ExperimentConfig,
+    train_dataset,
+    eval_dataset,
+    output_dir: Path,
+    device: str,
+) -> None:
+    from lora_experiments.models.registry import load_model_and_tokenizer
+    from lora_experiments.training.common import train_and_evaluate
+
+    builder_path = METHOD_BUILDERS.get(method.type)
+    if builder_path is None:
+        raise ValueError(f"Unknown method type: {method.type!r}")
+    builder = _import_builder(builder_path)
+
+    log.info(
+        "Loading model %r for task=%s method=%s",
+        config.model.name,
+        task,
+        method.model_dump(exclude_none=True),
+    )
+    base_model, tokenizer = load_model_and_tokenizer(config.model.name, device=device)
+    model = builder(base_model, method)
+
+    train_and_evaluate(model, tokenizer, task, train_dataset, eval_dataset, method, config, output_dir, device)
+
+    del model, base_model
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     config = ExperimentConfig.from_yaml(args.config)
     set_seed(config.seed)
 
     log.info("Loaded experiment %r: %s", config.experiment, config.description.strip())
-    log.info("Model: %s | Dataset: %s | Device: %s", config.model.name, config.dataset, args.device)
+    log.info("Model: %s | Tasks: %s | Device: %s", config.model.name, config.tasks, args.device)
 
     output_dir = Path(args.output_root) / config.output_subdir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for method in config.methods:
-        module_name = METHOD_DISPATCH.get(method.type)
-        if module_name is None:
-            raise ValueError(f"Unknown method type: {method.type!r}")
-        log.info("Method: %s (module=%s)", method.model_dump(exclude_none=True), module_name)
+    if args.dry_run:
+        for task in config.tasks:
+            for method in config.methods:
+                builder_path = METHOD_BUILDERS.get(method.type)
+                if builder_path is None:
+                    raise ValueError(f"Unknown method type: {method.type!r}")
+                log.info(
+                    "[dry-run] Skipping model load and training for task=%s method=%s (builder=%s)",
+                    task,
+                    method.model_dump(exclude_none=True),
+                    builder_path,
+                )
+        log.info("Done. Output dir: %s", output_dir)
+        return 0
 
-        if args.dry_run:
-            log.info("[dry-run] Skipping model load and training for method=%s", method.type)
-            continue
+    from lora_experiments.data.loaders import load_dataset
 
-        raise NotImplementedError(
-            "Real training is not implemented yet — run with --dry-run to validate "
-            "the config/model/method wiring, or see the training/ modules for the "
-            "NotImplementedError stubs to fill in first."
-        )
+    for task in config.tasks:
+        dataset = load_dataset(task)
+        train_dataset, eval_dataset = dataset["train"], dataset["eval"]
+        for method in config.methods:
+            run_method(method, task, config, train_dataset, eval_dataset, output_dir, args.device)
 
     log.info("Done. Output dir: %s", output_dir)
     return 0

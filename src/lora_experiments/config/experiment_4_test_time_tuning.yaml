@@ -5,7 +5,7 @@ description: >
   measure accuracy on the held-out query relative to the unadapted model.
 model:
   name: qwen2.5-7b-instruct
-dataset: TODO_arc_agi_style_dataset
+tasks: [TODO_arc_agi_style_dataset]
 output_subdir: exp4_test_time_tuning
 seed: 42
 methods:

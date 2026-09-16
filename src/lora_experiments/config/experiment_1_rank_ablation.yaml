@@ -1,14 +1,29 @@
 experiment: exp1_rank_ablation
 description: >
-  Fine-tune the same model on the same task with LoRA at different ranks,
-  plus a full fine-tuning baseline, to see how rank affects quality.
+  Fine-tune the same model on the same tasks with LoRA at different ranks,
+  plus a full fine-tuning baseline, to see how rank affects quality and
+  parameter efficiency across task types (classification, NLI, math).
 model:
   name: qwen2.5-0.5b-instruct
-dataset: TODO_dataset_name
+# One model x 3 tasks x 7 methods (full-FT + 6 LoRA ranks) = 21 runs.
+tasks:
+  - sst2
+  - rte
+  - gsm8k
 output_subdir: exp1_rank_ablation
 seed: 42
+training:
+  epochs: 3
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 1
+  learning_rate: 2.0e-4
+  max_seq_length: 512
+  max_new_tokens: 256
+  eval_samples: 200
 methods:
   - type: full_ft
+    # Full fine-tuning needs a much smaller LR than LoRA to stay stable.
+    learning_rate: 2.0e-5
   - type: lora
     rank: 1
     alpha: 2

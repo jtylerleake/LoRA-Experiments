@@ -13,10 +13,18 @@ from lora_experiments.config.schema import MethodSpec
 
 
 def build_lora_model(base_model, method: MethodSpec):
-    """Wrap `base_model` with a peft.LoraConfig-based adapter.
+    """Wrap `base_model` with a peft.LoraConfig-based adapter."""
+    from peft import LoraConfig, TaskType, get_peft_model
 
-    Not implemented yet. Will call peft.get_peft_model(base_model,
-    LoraConfig(r=method.rank, lora_alpha=method.alpha,
-    target_modules=method.target_modules)).
-    """
-    raise NotImplementedError("LoRA training not implemented yet.")
+    if method.rank is None or not method.target_modules:
+        raise ValueError("LoRA method requires 'rank' and 'target_modules' in the config.")
+
+    lora_config = LoraConfig(
+        r=method.rank,
+        lora_alpha=method.alpha or method.rank * 2,
+        target_modules=method.target_modules,
+        lora_dropout=0.05,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+    return get_peft_model(base_model, lora_config)
