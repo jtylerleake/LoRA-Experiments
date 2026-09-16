@@ -41,6 +41,10 @@ class TrainingConfig(BaseModel):
     # Generation-based eval (exact-match on GSM8K's final answer) is much
     # slower than training loss, so it runs on a subset of the test split.
     eval_samples: int = 200
+    # Caps the training split too — used by "_mini" experiment configs to
+    # smoke-test the full pipeline (training, metrics, plotting) in minutes
+    # instead of hours. None means use the full training split.
+    max_train_samples: int | None = None
 
 
 class ExperimentConfig(BaseModel):

@@ -20,7 +20,7 @@ from eval.metrics import (
     task_accuracy,
 )
 from models.registry import get_model_spec
-from training.common import CompactProgressCallback
+from training.common import CompactProgressCallback, cap_dataset
 from utils.logging_utils import file_logging
 
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "src" / "config"
@@ -50,6 +50,20 @@ def test_exp1_methods_span_full_ft_and_all_ranks():
     assert method_types == {"full_ft", "lora"}
     ranks = sorted(m.rank for m in config.methods if m.type == "lora")
     assert ranks == [1, 2, 4, 8, 16, 64]
+
+
+def test_exp1_mini_mirrors_full_structure_but_capped():
+    full = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1_rank_ablation.yaml")
+    mini = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1_rank_ablation_mini.yaml")
+    # Same tasks/methods shape (so the plots exercise real multi-task/rank data)...
+    assert mini.tasks == full.tasks
+    assert [m.type for m in mini.methods] == [m.type for m in full.methods]
+    assert [m.rank for m in mini.methods] == [m.rank for m in full.methods]
+    # ...but drastically smaller so it finishes fast.
+    assert mini.training.max_train_samples is not None
+    assert mini.training.max_train_samples < 100
+    assert mini.training.epochs == 1
+    assert mini.output_subdir != full.output_subdir
 
 
 def test_extract_final_answer_parses_gsm8k_format():
@@ -131,3 +145,20 @@ def test_compact_progress_callback_logs_steps_to_file(tmp_path):
     content = log_path.read_text(encoding="utf-8")
     assert "step=5" in content
     assert "1.2345" in content
+
+
+def test_cap_dataset_limits_size():
+    from datasets import Dataset
+
+    ds = Dataset.from_dict({"x": list(range(100))})
+    capped = cap_dataset(ds, 10)
+    assert len(capped) == 10
+    assert list(capped["x"]) == list(range(10))
+
+
+def test_cap_dataset_is_noop_when_none_or_already_smaller():
+    from datasets import Dataset
+
+    ds = Dataset.from_dict({"x": list(range(5))})
+    assert len(cap_dataset(ds, None)) == 5
+    assert len(cap_dataset(ds, 100)) == 5

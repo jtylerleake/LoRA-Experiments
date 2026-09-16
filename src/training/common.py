@@ -39,6 +39,16 @@ def count_trainable_parameters(model) -> tuple[int, int]:
     return trainable, total
 
 
+def cap_dataset(dataset, max_samples: int | None):
+    """Subsample `dataset` to at most `max_samples` rows (no-op if None or
+    already smaller). Used by "_mini" experiment configs to smoke-test the
+    full pipeline on a handful of examples instead of the full split.
+    """
+    if max_samples is None or max_samples >= len(dataset):
+        return dataset
+    return dataset.select(range(max_samples))
+
+
 class CompactProgressCallback:
     """A HF Trainer callback that shows one continuously-updating tqdm bar
     (with a live wall-clock timer via tqdm's {elapsed}) instead of printing
@@ -157,6 +167,7 @@ def train_and_evaluate(
         run_logger.info("Starting run=%s task=%s method=%s", run_name, task, method.model_dump(exclude_none=True))
         start = time.time()
 
+        train_dataset = cap_dataset(train_dataset, training_cfg.max_train_samples)
         tokenized_train = tokenize_for_causal_lm(train_dataset, tokenizer, training_cfg.max_seq_length)
 
         args = TrainingArguments(

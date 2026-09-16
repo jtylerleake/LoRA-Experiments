@@ -42,6 +42,20 @@ environment that installs the same pinned dependencies from
 `notebooks/colab_bootstrap.ipynb` contains exactly these cells; each
 `notebooks/expN_*.ipynb` repeats the pattern pointed at its own config.
 
+## Smoke-testing before a full sweep
+
+Before committing GPU time to the full `experiment_1_rank_ablation.yaml`
+sweep (3 tasks x 7 methods, can run for hours), run
+`notebooks/exp1_rank_ablation_mini.ipynb` first —
+`experiment_1_rank_ablation_mini.yaml` has the exact same task/method
+structure but caps training to ~32 examples and 1 epoch per run, so all 21
+runs finish in a couple of minutes. It writes to a separate
+`exp1_rank_ablation_mini` output folder, so it never touches the full run's
+results, and its own `metrics.jsonl` + `plot_results.py` output let you
+confirm training, metrics, and plotting are all wired correctly before
+starting the real sweep. Accuracy numbers from the mini run are meaningless
+(barely any training data) — only the wiring matters.
+
 ## Plotting results
 
 `scripts/plot_results.py --metrics <path/to/metrics.jsonl>` reads a run's
