@@ -1,8 +1,8 @@
 """Helpers used only when running inside a Colab notebook.
 
-Every function here is a no-op / raises outside of Colab so the same
-`lora_experiments` package stays importable in the Docker CPU dev image
-without pulling in Colab-only modules at import time.
+Every function here is a no-op / raises outside of Colab so this module
+stays importable in the Docker CPU dev image without pulling in Colab-only
+modules at import time.
 """
 from __future__ import annotations
 

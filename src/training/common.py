@@ -7,10 +7,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from lora_experiments.config.schema import ExperimentConfig, MethodSpec
-from lora_experiments.data.loaders import get_choices, tokenize_for_causal_lm
-from lora_experiments.eval.metrics import task_accuracy, write_metric
-from lora_experiments.utils.logging_utils import get_logger
+from config.schema import ExperimentConfig, MethodSpec
+from data.loaders import get_choices, tokenize_for_causal_lm
+from eval.metrics import task_accuracy, write_metric
+from utils.logging_utils import get_logger
 
 log = get_logger(__name__)
 

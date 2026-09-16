@@ -3,7 +3,7 @@ and experiment 3's method comparison.
 """
 from __future__ import annotations
 
-from lora_experiments.config.schema import MethodSpec
+from config.schema import MethodSpec
 
 
 def prepare_full_finetune(base_model, method: MethodSpec):

@@ -6,7 +6,7 @@ compared against the unadapted base model on the same query.
 """
 from __future__ import annotations
 
-from lora_experiments.config.schema import MethodSpec
+from config.schema import MethodSpec
 
 
 def adapt_and_evaluate_task(base_model, task, method: MethodSpec):

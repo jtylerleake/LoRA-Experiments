@@ -16,9 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from lora_experiments.config.schema import ExperimentConfig, MethodSpec
-from lora_experiments.utils.logging_utils import get_logger
-from lora_experiments.utils.seeding import set_seed
+from config.schema import ExperimentConfig, MethodSpec
+from utils.logging_utils import get_logger
+from utils.seeding import set_seed
 
 log = get_logger(__name__)
 
@@ -27,10 +27,10 @@ log = get_logger(__name__)
 # rest (train, generate, score, write metrics) the same way regardless of
 # which builder produced the model.
 METHOD_BUILDERS = {
-    "full_ft": "lora_experiments.training.full_finetune.prepare_full_finetune",
-    "lora": "lora_experiments.training.lora.build_lora_model",
-    "adapters": "lora_experiments.training.adapters.build_adapter_model",
-    "prefix_tuning": "lora_experiments.training.prefix_tuning.build_prefix_tuning_model",
+    "full_ft": "training.full_finetune.prepare_full_finetune",
+    "lora": "training.lora.build_lora_model",
+    "adapters": "training.adapters.build_adapter_model",
+    "prefix_tuning": "training.prefix_tuning.build_prefix_tuning_model",
 }
 
 
@@ -64,8 +64,8 @@ def run_method(
     output_dir: Path,
     device: str,
 ) -> None:
-    from lora_experiments.models.registry import load_model_and_tokenizer
-    from lora_experiments.training.common import train_and_evaluate
+    from models.registry import load_model_and_tokenizer
+    from training.common import train_and_evaluate
 
     builder_path = METHOD_BUILDERS.get(method.type)
     if builder_path is None:
@@ -119,7 +119,7 @@ def main(argv=None) -> int:
         log.info("Done. Output dir: %s", output_dir)
         return 0
 
-    from lora_experiments.data.loaders import load_dataset
+    from data.loaders import load_dataset
 
     for task in config.tasks:
         dataset = load_dataset(task)

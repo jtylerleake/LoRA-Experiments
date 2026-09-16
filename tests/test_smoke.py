@@ -8,24 +8,27 @@ from pathlib import Path
 
 import pytest
 
-import lora_experiments
-from lora_experiments.config.schema import ExperimentConfig
-from lora_experiments.data.loaders import _format_gsm8k, _format_rte, _format_sst2, get_choices
-from lora_experiments.eval.metrics import (
+from config.schema import ExperimentConfig
+from data.loaders import _format_gsm8k, _format_rte, _format_sst2, get_choices
+from eval.metrics import (
     classification_accuracy,
     exact_match_accuracy,
     extract_choice_label,
     extract_final_answer,
     task_accuracy,
 )
-from lora_experiments.models.registry import get_model_spec
+from models.registry import get_model_spec
 
-CONFIG_DIR = Path(__file__).resolve().parent.parent / "src" / "lora_experiments" / "config"
+CONFIG_DIR = Path(__file__).resolve().parent.parent / "src" / "config"
 EXPERIMENT_CONFIGS = sorted(CONFIG_DIR.glob("experiment_*.yaml"))
 
 
 def test_package_imports():
-    assert lora_experiments.__version__
+    import data.loaders  # noqa: F401
+    import eval.metrics  # noqa: F401
+    import models.registry  # noqa: F401
+    import training.lora  # noqa: F401
+    import utils.logging_utils  # noqa: F401
 
 
 @pytest.mark.parametrize("config_path", EXPERIMENT_CONFIGS, ids=lambda p: p.stem)

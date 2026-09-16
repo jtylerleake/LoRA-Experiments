@@ -36,7 +36,7 @@ docker compose -f docker/docker-compose.yml run --rm dev bash
 # Inside the container:
 ruff check .
 pytest
-python scripts/run_experiment.py --config src/lora_experiments/config/experiment_1_rank_ablation.yaml --device cpu --dry-run
+python scripts/run_experiment.py --config src/config/experiment_1_rank_ablation.yaml --device cpu --dry-run
 ```
 
 ## Adding a dependency
@@ -48,7 +48,7 @@ python scripts/run_experiment.py --config src/lora_experiments/config/experiment
 
 ## Adding a model
 
-Add an entry to `src/lora_experiments/config/models.yaml` with its
+Add an entry to `src/config/models.yaml` with its
 Hugging Face repo id and quantization hint — no code changes required
 unless the model needs bespoke loading logic.
 
@@ -63,7 +63,7 @@ bottom.
 
 ```
 docker/          Dockerfile, docker-compose, pinned requirements
-src/lora_experiments/
+src/
   config/        experiment YAML configs + the model registry
   data/          dataset loaders (incl. ARC-AGI-style loader for exp 4)
   models/        model/tokenizer registry

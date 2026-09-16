@@ -34,7 +34,7 @@ environment that installs the same pinned dependencies from
 5. **Run an experiment**, pointing output at Drive:
    ```bash
    !python scripts/run_experiment.py \
-       --config src/lora_experiments/config/experiment_1_rank_ablation.yaml \
+       --config src/config/experiment_1_rank_ablation.yaml \
        --device cuda \
        --output-root /content/drive/MyDrive/lora_experiments_outputs
    ```
@@ -75,13 +75,13 @@ reference/citation, but the runtime dependency is Hugging Face **PEFT**:
 - It also implements prefix tuning and other PEFT methods out of the box,
   so Experiment 3's side-by-side comparison (full FT / adapters / prefix
   tuning / LoRA) shares one consistent code path
-  (`src/lora_experiments/training/`) instead of four bespoke ones.
+  (`src/training/`) instead of four bespoke ones.
 
 ## Model sizing on Colab Pro
 
 Colab Pro GPUs are typically T4 (16GB), L4 (24GB), or A100 (40GB), assigned
 dynamically — you don't pick the exact GPU. The model registry
-(`src/lora_experiments/config/models.yaml`) reflects that:
+(`src/config/models.yaml`) reflects that:
 
 - Qwen2.5 0.5B/1.5B/7B-Instruct run unquantized on any of those GPUs.
 - `gpt-oss-20b` is loaded 4-bit (bitsandbytes) to fit comfortably even on a
