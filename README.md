@@ -71,7 +71,8 @@ src/
   eval/          metrics
   utils/         logging, seeding, Colab/Drive helpers
 notebooks/       Colab notebooks (bootstrap + one per experiment)
-scripts/         run_experiment.py, plot_results.py, compile_requirements.ps1, sync_outputs.py
+scripts/         run_experiment.py, plot_results.py, plot_matrix_study_results.py,
+                 compile_requirements.ps1, sync_outputs.py
 outputs/         gitignored local mirror of metrics/logs pulled from Drive
 tests/           unit tests run inside the Docker dev image
 docs/            colab_workflow.md
@@ -85,18 +86,24 @@ GSM8K; model loading with optional quantization; LoRA (`peft.LoraConfig`),
 full-fine-tune, PEFT prefix-tuning, and a from-scratch bottleneck-adapter
 (PEFT has no classic adapter method) builder; a shared train/eval loop
 (`training/common.py`) that trains, scores accuracy per task, and writes
-`metrics.jsonl`; and `scripts/plot_results.py` (seaborn: accuracy vs.
-trainable params, accuracy vs. rank, a single combined training-curves
-plot across every task/method run). `--dry-run` validates config →
-model-registry → method-dispatch → output-dir wiring without touching
-real weights.
+`metrics.jsonl`. `--dry-run` validates config → model-registry →
+method-dispatch → output-dir wiring without touching real weights.
+Two seaborn plotting scripts read a run's `metrics.jsonl`:
+`scripts/plot_results.py` (experiments 1/1-A: accuracy vs. trainable
+params, accuracy vs. rank, one training-curves plot per task) and
+`scripts/plot_matrix_study_results.py` (experiment 2: a task x
+matrix-configuration heatmap normalized to % of full fine-tuning, and a
+per-task ablation-delta plot for removing each attention matrix from the
+full-attention-LoRA condition).
 
 - **Experiment 1** (rank ablation): 3 tasks x (full-FT + 6 LoRA ranks) = 21 runs.
 - **Experiment 1-A**: experiment 1 with full-FT removed (LoRA ranks only),
   run one task at a time via `run_experiment.py --task <name>` so a large
   sweep can be split across several Colab sessions and still aggregate
   into one `metrics.jsonl` — see `docs/colab_workflow.md`.
-- **Experiment 2** (matrix application study): 6 LoRA target-module variants on SST-2.
+- **Experiment 2** (matrix application study): 3 tasks x (full-FT + 12
+  LoRA target-module variants: individual matrices, pairs, all-attention,
+  MLP-only, and 4 leave-one-out-from-full-attention configs) = 39 runs.
 - **Experiment 3** (method comparison): full-FT, bottleneck adapters, prefix tuning, LoRA on SST-2.
 - Every experiment above has a `_mini` config + notebook (a handful of
   training examples, 1 epoch) that smoke-tests the full pipeline in

@@ -78,15 +78,23 @@ starting the real sweep. Accuracy numbers from the mini run are meaningless
 
 ## Plotting results
 
-`scripts/plot_results.py --metrics <path/to/metrics.jsonl>` reads a run's
-metrics and writes plots built with seaborn: accuracy vs. trainable params,
-accuracy vs. rank, and one training-curves plot per task (each overlaying
-every rank/method run for that task). Since Drive is already mounted in
-Colab, it's simplest to run this directly against the Drive-mounted
-`metrics.jsonl` there (see the cell in `notebooks/exp1_rank_ablation.ipynb`)
-rather than syncing first. It reads whatever rows are in `metrics.jsonl`
-regardless of how many separate `run_experiment.py` invocations wrote
-them — see "Running experiment 1-A piecemeal" below.
+`scripts/plot_results.py --metrics <path/to/metrics.jsonl>` (experiment 1 /
+1-A) reads a run's metrics and writes plots built with seaborn: accuracy
+vs. trainable params, accuracy vs. rank, and one training-curves plot per
+task (each overlaying every rank/method run for that task).
+`scripts/plot_matrix_study_results.py` (experiment 2) writes two different
+plots from the same kind of `metrics.jsonl`: a task x matrix-configuration
+heatmap (color = eval accuracy normalized to % of that task's own full-FT
+baseline, so tasks with different absolute accuracy scales are directly
+comparable) and a per-task ablation-delta plot (the accuracy change from
+removing each of W_q/W_k/W_v/W_o one at a time out of the full-attention
+LoRA condition, sharing one y-axis across panels so the drop magnitude is
+honestly comparable across tasks). Since Drive is already mounted in
+Colab, it's simplest to run either directly against the Drive-mounted
+`metrics.jsonl` there (see the plotting cell in each experiment's
+notebook) rather than syncing first. Both read whatever rows are in
+`metrics.jsonl` regardless of how many separate `run_experiment.py`
+invocations wrote them — see "Running experiment 1-A piecemeal" below.
 
 ## Running experiment 1-A piecemeal
 

@@ -1,34 +1,80 @@
 experiment: exp2_matrix_study
 description: >
-  Fixed LoRA rank, sweep which weight matrices LoRA is applied to, to see
-  which subsets of the transformer matter most for adaptation quality.
+  Fixed LoRA rank (8), sweep which weight matrices LoRA is applied to,
+  across all 3 tasks, to see which subsets of the transformer matter most
+  for adaptation quality and whether that answer is task-dependent.
+  Includes a full fine-tuning baseline per task (for normalizing the
+  heatmap plot) and the 4 "leave-one-out from full attention" configs (for
+  the ablation delta plot) alongside the individual/paired/grouped
+  target-module variants. See scripts/plot_matrix_study_results.py.
 model:
   name: qwen2.5-0.5b-instruct
-tasks: [sst2]
+# One model x 3 tasks x 13 methods (full-FT + 12 LoRA target-module
+# variants) = 39 runs.
+tasks:
+  - sst2
+  - rte
+  - gsm8k
 output_subdir: exp2_matrix_study
 seed: 42
 methods:
-  - type: lora
+  - type: full_ft
+    # Full fine-tuning needs a much smaller LR than LoRA to stay stable.
+    # Also the 100% baseline plot_matrix_study_results.py normalizes against.
+    learning_rate: 2.0e-5
+
+  # Individual matrices
+  - type: lora  # W_q only
     rank: 8
     alpha: 16
     target_modules: [q_proj]
-  - type: lora
+  - type: lora  # W_k only
+    rank: 8
+    alpha: 16
+    target_modules: [k_proj]
+  - type: lora  # W_v only
     rank: 8
     alpha: 16
     target_modules: [v_proj]
-  - type: lora
+  - type: lora  # W_o only
+    rank: 8
+    alpha: 16
+    target_modules: [o_proj]
+
+  # Pairs
+  - type: lora  # W_q + W_k
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, k_proj]
+  - type: lora  # W_q + W_v
     rank: 8
     alpha: 16
     target_modules: [q_proj, v_proj]
-  - type: lora
+
+  # Grouped
+  - type: lora  # all attention (q+k+v+o) -- also the ablation delta plot's baseline
     rank: 8
     alpha: 16
     target_modules: [q_proj, k_proj, v_proj, o_proj]
-  - type: lora
+  - type: lora  # MLP only
     rank: 8
     alpha: 16
     target_modules: [gate_proj, up_proj, down_proj]
-  - type: lora
+
+  # Leave-one-out from full attention, for the ablation delta plot
+  - type: lora  # all attention minus W_q
     rank: 8
     alpha: 16
-    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+    target_modules: [k_proj, v_proj, o_proj]
+  - type: lora  # all attention minus W_k
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, v_proj, o_proj]
+  - type: lora  # all attention minus W_v
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, k_proj, o_proj]
+  - type: lora  # all attention minus W_o
+    rank: 8
+    alpha: 16
+    target_modules: [q_proj, k_proj, v_proj]

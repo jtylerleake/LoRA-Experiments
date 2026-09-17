@@ -29,10 +29,33 @@ log = get_logger(__name__)
 
 _BAR_FORMAT = "{desc} {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]{postfix}"
 
+# Fixed display/ordering for target_modules-derived names — used so two LoRA
+# methods with the same rank but different target_modules (e.g. experiment
+# 2's matrix-application study) get distinct run names instead of both
+# resolving to "lora_r8" and colliding on the same run_dir/train.log.
+_MODULE_ABBREV = {
+    "q_proj": "q",
+    "k_proj": "k",
+    "v_proj": "v",
+    "o_proj": "o",
+    "gate_proj": "gate",
+    "up_proj": "up",
+    "down_proj": "down",
+}
+_MODULE_ORDER = list(_MODULE_ABBREV)
+
+
+def target_modules_slug(target_modules: list[str]) -> str:
+    ordered = [m for m in _MODULE_ORDER if m in target_modules]
+    return "".join(_MODULE_ABBREV.get(m, m) for m in ordered)
+
 
 def method_run_name(method: MethodSpec) -> str:
     if method.type == "lora":
-        return f"lora_r{method.rank}"
+        name = f"lora_r{method.rank}"
+        if method.target_modules:
+            name += f"_{target_modules_slug(method.target_modules)}"
+        return name
     return method.type
 
 
