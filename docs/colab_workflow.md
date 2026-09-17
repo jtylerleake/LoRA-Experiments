@@ -65,11 +65,9 @@ starting the real sweep. Accuracy numbers from the mini run are meaningless
 ## Plotting results
 
 `scripts/plot_results.py --metrics <path/to/metrics.jsonl>` reads a run's
-metrics and writes three plots built with seaborn: accuracy vs. trainable
-params, accuracy vs. rank, and a single combined training-curves plot
-overlaying every task/rank/method run (x-axis normalized to % of training
-complete, y-axis log-scaled, since different tasks can have very different
-dataset sizes and loss magnitudes). Since Drive is already mounted in
+metrics and writes plots built with seaborn: accuracy vs. trainable params,
+accuracy vs. rank, and one training-curves plot per task (each overlaying
+every rank/method run for that task). Since Drive is already mounted in
 Colab, it's simplest to run this directly against the Drive-mounted
 `metrics.jsonl` there (see the cell in `notebooks/exp1_rank_ablation.ipynb`)
 rather than syncing first. It reads whatever rows are in `metrics.jsonl`

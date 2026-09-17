@@ -395,30 +395,26 @@ def _fake_metrics_df():
             "eval_accuracy": 0.6,
             "trainable_params": 1_000,
             "total_params": 1_000_000,
-            # a much shorter run, e.g. a smaller dataset -- this is exactly
-            # the case progress-normalization exists for.
+            # a much shorter run, e.g. a smaller dataset
             "training_curve": [{"step": s, "loss": 1.5 / s} for s in range(1, 3)],
         },
     ]
     return pd.json_normalize(records, sep="_")
 
 
-def test_explode_training_curves_normalizes_progress_per_run():
+def test_explode_training_curves_keeps_raw_step_per_task():
     df = _fake_metrics_df()
     curves = plot_results._explode_training_curves(df)
 
     sst2_curve = curves[curves["run_name"] == "sst2__lora_r8"].sort_values("step")
-    assert sst2_curve["progress"].tolist() == pytest.approx([0.25, 0.5, 0.75, 1.0])
+    assert sst2_curve["step"].tolist() == [1, 2, 3, 4]
+    assert sst2_curve["loss"].tolist() == pytest.approx([1.0, 0.5, 1 / 3, 0.25])
 
     rte_curve = curves[curves["run_name"] == "rte__lora_r8"].sort_values("step")
-    assert rte_curve["progress"].tolist() == pytest.approx([0.5, 1.0])
-
-    # Both runs' curves now span the same 0-1 x-range despite very
-    # different total step counts (4 vs. 2) -- that's the whole point.
-    assert sst2_curve["progress"].max() == rte_curve["progress"].max() == 1.0
+    assert rte_curve["step"].tolist() == [1, 2]
 
 
-def test_plot_results_produces_one_combined_training_curves_file(tmp_path):
+def test_plot_results_produces_one_training_curves_file_per_task(tmp_path):
     metrics_path = tmp_path / "metrics.jsonl"
     records = [
         {
@@ -455,7 +451,7 @@ def test_plot_results_produces_one_combined_training_curves_file(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (out_dir / "accuracy_vs_trainable_params.png").exists()
     assert (out_dir / "accuracy_vs_rank.png").exists()
-    assert (out_dir / "training_curves.png").exists()
-    # the old per-task files should no longer be produced
-    assert not (out_dir / "training_curves_sst2.png").exists()
-    assert not (out_dir / "training_curves_rte.png").exists()
+    assert (out_dir / "training_curves_sst2.png").exists()
+    assert (out_dir / "training_curves_rte.png").exists()
+    # no combined file should be produced
+    assert not (out_dir / "training_curves.png").exists()
