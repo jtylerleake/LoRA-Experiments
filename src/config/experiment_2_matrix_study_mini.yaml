@@ -1,13 +1,13 @@
 experiment: exp2_matrix_study_mini
 description: >
-  Tiny smoke-test of experiment 2: same 3 tasks x 13 methods (full-FT + 12
-  LoRA target-module variants) as experiment_2_matrix_study.yaml, but
-  capped to a handful of training examples and 1 epoch per run, so all 39
-  runs finish in a few minutes on a GPU. Use this to verify training,
-  metrics.jsonl, and scripts/plot_matrix_study_results.py's heatmap +
-  ablation-delta plots all work end-to-end before committing to the full
-  sweep. Accuracy numbers from this config are meaningless (barely any
-  training data) — only the wiring matters here.
+  Tiny smoke-test of experiment 2: same 3 tasks x 12 LoRA target-module
+  variants as experiment_2_matrix_study.yaml, but capped to a handful of
+  training examples and 1 epoch per run, so all 36 runs finish in a few
+  minutes on a GPU. Use this to verify training, metrics.jsonl, and
+  scripts/plot_matrix_study_results.py's heatmap + ablation-delta plots
+  all work end-to-end before committing to the full sweep. Accuracy
+  numbers from this config are meaningless (barely any training data) —
+  only the wiring matters here.
 model:
   name: qwen2.5-0.5b-instruct
 tasks:
@@ -26,9 +26,6 @@ training:
   eval_samples: 8
   max_train_samples: 32
 methods:
-  - type: full_ft
-    learning_rate: 2.0e-5
-
   - type: lora  # W_q only
     rank: 8
     alpha: 16

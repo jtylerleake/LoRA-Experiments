@@ -92,18 +92,24 @@ Two seaborn plotting scripts read a run's `metrics.jsonl`:
 `scripts/plot_results.py` (experiments 1/1-A: accuracy vs. trainable
 params, accuracy vs. rank, one training-curves plot per task) and
 `scripts/plot_matrix_study_results.py` (experiment 2: a task x
-matrix-configuration heatmap normalized to % of full fine-tuning, and a
-per-task ablation-delta plot for removing each attention matrix from the
+matrix-configuration heatmap of raw eval accuracy, and a per-task
+ablation-delta plot for removing each attention matrix from the
 full-attention-LoRA condition).
 
-- **Experiment 1** (rank ablation): 3 tasks x (full-FT + 6 LoRA ranks) = 21 runs.
-- **Experiment 1-A**: experiment 1 with full-FT removed (LoRA ranks only),
-  run one task at a time via `run_experiment.py --task <name>` so a large
-  sweep can be split across several Colab sessions and still aggregate
-  into one `metrics.jsonl` — see `docs/colab_workflow.md`.
-- **Experiment 2** (matrix application study): 3 tasks x (full-FT + 12
-  LoRA target-module variants: individual matrices, pairs, all-attention,
-  MLP-only, and 4 leave-one-out-from-full-attention configs) = 39 runs.
+Full fine-tuning is dropped everywhere except experiment 3 (where it's a
+direct comparison point) — it's by far the most expensive method to run,
+and every experiment below is also otherwise scaled down for compute cost
+(1 epoch, fewer eval samples, a capped SST-2 split, shorter generations
+for classification tasks):
+
+- **Experiment 1** (rank ablation): 3 tasks x 3 LoRA ranks (1, 8, 64) = 9 runs.
+- **Experiment 1-A**: same as experiment 1, run one task at a time via
+  `run_experiment.py --task <name>` so a sweep can be split across several
+  Colab sessions and still aggregate into one `metrics.jsonl` — see
+  `docs/colab_workflow.md`.
+- **Experiment 2** (matrix application study): 3 tasks x 12 LoRA
+  target-module variants (individual matrices, pairs, all-attention,
+  MLP-only, and 4 leave-one-out-from-full-attention configs) = 36 runs.
 - **Experiment 3** (method comparison): full-FT, bottleneck adapters, prefix tuning, LoRA on SST-2.
 - Every experiment above has a `_mini` config + notebook (a handful of
   training examples, 1 epoch) that smoke-tests the full pipeline in

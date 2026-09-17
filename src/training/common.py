@@ -250,11 +250,12 @@ def train_and_evaluate(
         train_result = trainer.train()
 
         choices = get_choices(task)
+        max_new_tokens = training_cfg.max_new_tokens_by_task.get(task, training_cfg.max_new_tokens)
         predictions, references = generate_predictions(
             model,
             tokenizer,
             eval_dataset,
-            max_new_tokens=training_cfg.max_new_tokens,
+            max_new_tokens=max_new_tokens,
             max_seq_length=training_cfg.max_seq_length,
             num_samples=training_cfg.eval_samples,
             desc=f"[{run_name}] eval ",

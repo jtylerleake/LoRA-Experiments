@@ -4,12 +4,13 @@ metrics.jsonl (see experiment_2_matrix_study.yaml).
 Produces two plots, built with seaborn:
 
   1. heatmap.png — task x LoRA-target-module heatmap. Color is each LoRA
-     config's eval accuracy normalized to % of that task's own full
-     fine-tuning accuracy (from the config's `full_ft` method), so tasks
-     with very different absolute accuracy scales (e.g. SST-2 vs. GSM8K)
-     are directly comparable. Diverging color centered at exactly 100%
-     (matches full-FT): blue below, red at/above, since the value's job is
-     "how does this compare to a baseline," not raw magnitude.
+     config's raw eval accuracy (experiment 2 no longer runs a full-FT
+     baseline per task, dropped for compute cost, so there's nothing to
+     normalize against). Sequential single-hue color (light->dark) since
+     the value's job is now a plain low->high magnitude read, not a
+     baseline/delta one — note this means absolute accuracy isn't directly
+     comparable across tasks with very different scales (e.g. SST-2 vs.
+     GSM8K) the way the old normalized version was.
   2. ablation_delta.png — one panel per task, bars showing the accuracy
      change from removing each of W_q/W_k/W_v/W_o one at a time out of the
      full-attention-LoRA (W_q+W_k+W_v+W_o) condition, controlling for
@@ -18,8 +19,8 @@ Produces two plots, built with seaborn:
      *magnitude* is honestly comparable across tasks, not just its shape.
 
 Colors follow the same validated palette as plot_results.py (see the
-dataviz skill): the heatmap uses the documented diverging pair (blue <->
-red, neutral gray at the 100% center); the ablation-delta bars reuse the
+dataviz skill): the heatmap uses a single-hue sequential ramp (same blue
+family as plot_results.py's rank ramp); the ablation-delta bars reuse the
 categorical slots for W_q/W_k/W_v/W_o so matrix identity reads consistently
 across both plots.
 """
@@ -32,7 +33,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+from matplotlib.colors import LinearSegmentedColormap, Normalize
 
 TASK_ORDER = ["sst2", "rte", "gsm8k"]
 
@@ -41,12 +42,10 @@ INK = "#0b0b0b"
 MUTED = "#898781"
 GRID = "#e1e0d9"
 
-# Diverging pair (blue <-> red, neutral gray midpoint) centered at 100% —
-# this heatmap's job is "how does this compare to the full-FT baseline,"
-# a baseline/delta job, not a plain low->high magnitude job.
-DIVERGING_LOW = "#1c5cab"
-DIVERGING_MID = "#f0efec"
-DIVERGING_HIGH = "#e34948"
+# Sequential (magnitude) ramp -- one hue, light -> dark -- for raw eval
+# accuracy per cell. Same blue family as plot_results.py's RANK_RAMP.
+SEQUENTIAL_LOW = "#eaf1fb"
+SEQUENTIAL_HIGH = "#104281"
 
 # Categorical slots 1-4, reused for W_q/W_k/W_v/W_o so matrix identity
 # reads consistently between the heatmap's columns and the ablation bars.
@@ -124,19 +123,11 @@ def load_metrics(path: Path) -> pd.DataFrame:
 
 
 def build_heatmap_data(df: pd.DataFrame) -> pd.DataFrame:
-    full_ft_acc = df[df["method_type"] == "full_ft"].set_index("task")["eval_accuracy"]
-
     lora = df[df["method_type"] == "lora"].copy()
     lora["matrix"] = lora["method_target_modules"].apply(matrix_label)
+    lora["accuracy_pct"] = 100.0 * lora["eval_accuracy"]
 
-    def normalize(row):
-        baseline = full_ft_acc.get(row["task"])
-        if not baseline:
-            return float("nan")
-        return 100.0 * row["eval_accuracy"] / baseline
-
-    lora["normalized"] = lora.apply(normalize, axis=1)
-    pivot = lora.pivot_table(index="task", columns="matrix", values="normalized", aggfunc="mean")
+    pivot = lora.pivot_table(index="task", columns="matrix", values="accuracy_pct", aggfunc="mean")
     row_order = [t for t in TASK_ORDER if t in pivot.index]
     col_order = [c for c in COLUMN_ORDER if c in pivot.columns]
     return pivot.reindex(index=row_order, columns=col_order)
@@ -158,12 +149,8 @@ def plot_heatmap(df: pd.DataFrame, out_path: Path) -> None:
     if pivot.empty:
         return
 
-    values = pivot.to_numpy()
-    finite = values[~pd.isna(values)]
-    vmin = min(60.0, float(finite.min()) - 5) if finite.size else 60.0
-    vmax = max(140.0, float(finite.max()) + 5) if finite.size else 140.0
-    norm = TwoSlopeNorm(vcenter=100.0, vmin=vmin, vmax=vmax)
-    cmap = LinearSegmentedColormap.from_list("perf_vs_full_ft", [DIVERGING_LOW, DIVERGING_MID, DIVERGING_HIGH])
+    norm = Normalize(vmin=0.0, vmax=100.0)
+    cmap = LinearSegmentedColormap.from_list("accuracy_seq", [SEQUENTIAL_LOW, SEQUENTIAL_HIGH])
 
     fig, ax = plt.subplots(figsize=(max(9, 1.1 * len(pivot.columns) + 2), 3.8))
     sns.heatmap(
@@ -176,12 +163,12 @@ def plot_heatmap(df: pd.DataFrame, out_path: Path) -> None:
         fmt=".0f",
         linewidths=1.5,
         linecolor=SURFACE,
-        cbar_kws={"label": "% of full fine-tuning accuracy"},
+        cbar_kws={"label": "eval accuracy (%)"},
     )
     for text, color in zip(ax.texts, _annotation_text_colors(pivot, norm, cmap)):
         text.set_color(color)
 
-    ax.set_title("Matrix-application study: performance vs. full fine-tuning", color=INK, fontweight="bold")
+    ax.set_title("Matrix-application study: eval accuracy by target-module config", color=INK, fontweight="bold")
     ax.set_xlabel("LoRA target modules")
     ax.set_ylabel("")
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")

@@ -39,6 +39,12 @@ class TrainingConfig(BaseModel):
     learning_rate: float = 2.0e-4
     max_seq_length: int = 512
     max_new_tokens: int = 256
+    # Per-task override for max_new_tokens, keyed by task name -- falls
+    # back to max_new_tokens above for any task not listed here.
+    # Classification tasks (sst2, rte) only ever need a handful of output
+    # tokens; paying GSM8K's multi-step-reasoning generation budget on
+    # those wastes eval time for no accuracy benefit.
+    max_new_tokens_by_task: dict[str, int] = {}
     # Generation-based eval (exact-match on GSM8K's final answer) is much
     # slower than training loss, so it runs on a subset of the test split.
     eval_samples: int = 200

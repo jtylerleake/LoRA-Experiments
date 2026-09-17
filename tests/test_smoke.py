@@ -61,13 +61,16 @@ def test_experiment_config_loads(config_path: Path):
     get_model_spec(config.model.name)
 
 
-def test_exp1_methods_span_full_ft_and_all_ranks():
+def test_exp1_methods_are_lora_only_across_all_ranks():
+    """Full fine-tuning was dropped from experiment 1 for compute cost --
+    experiment 3 is where it gets a direct comparison instead.
+    """
     config = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1_rank_ablation.yaml")
     assert config.tasks == ["sst2", "rte", "gsm8k"]
     method_types = {m.type for m in config.methods}
-    assert method_types == {"full_ft", "lora"}
-    ranks = sorted(m.rank for m in config.methods if m.type == "lora")
-    assert ranks == [1, 2, 4, 8, 16, 64]
+    assert method_types == {"lora"}
+    ranks = sorted(m.rank for m in config.methods)
+    assert ranks == [1, 8, 64]
 
 
 def test_exp1_mini_mirrors_full_structure_but_capped():
@@ -91,7 +94,7 @@ def test_exp1a_has_no_full_ft_and_mirrors_exp1_lora_ranks():
     assert {m.type for m in exp1a.methods} == {"lora"}
     exp1_ranks = sorted(m.rank for m in exp1.methods if m.type == "lora")
     exp1a_ranks = sorted(m.rank for m in exp1a.methods)
-    assert exp1a_ranks == exp1_ranks == [1, 2, 4, 8, 16, 64]
+    assert exp1a_ranks == exp1_ranks == [1, 8, 64]
     assert exp1a.output_subdir != exp1.output_subdir
 
 
@@ -130,10 +133,11 @@ def test_exp2_full_and_mini_share_target_module_sweep():
 
     lora_methods = [m for m in full.methods if m.type == "lora"]
     assert all(m.rank == 8 for m in lora_methods)
-    # full-FT baseline (for the heatmap's normalization) plus every
+    # Full fine-tuning was dropped for compute cost (experiment 3 is where
+    # it gets a direct comparison instead), so this is every
     # individual/paired/grouped/leave-one-out target-module variant the
-    # heatmap and ablation-delta plots need.
-    assert {m.type for m in full.methods} == {"full_ft", "lora"}
+    # heatmap and ablation-delta plots need, and nothing else.
+    assert {m.type for m in full.methods} == {"lora"}
     target_module_sets = {tuple(sorted(m.target_modules)) for m in lora_methods}
     expected = {
         ("q_proj",),
@@ -565,7 +569,6 @@ def test_matrix_label_maps_known_configs_and_is_order_independent():
 
 def _fake_matrix_study_records():
     return [
-        {"task": "sst2", "run_name": "sst2__full_ft", "method": {"type": "full_ft"}, "eval_accuracy": 0.80},
         {
             "task": "sst2",
             "run_name": "sst2__lora_r8_q",
@@ -609,12 +612,16 @@ def _fake_matrix_study_df():
     return pd.json_normalize(_fake_matrix_study_records(), sep="_")
 
 
-def test_build_heatmap_data_normalizes_against_full_ft():
+def test_build_heatmap_data_uses_raw_accuracy():
+    """Regression test: experiment 2 dropped its full-FT baseline for
+    compute cost, so the heatmap can no longer normalize against it --
+    it shows each LoRA config's raw eval accuracy instead.
+    """
     df = _fake_matrix_study_df()
     pivot = plot_matrix_study_results.build_heatmap_data(df)
 
-    assert pivot.loc["sst2", "W_q"] == pytest.approx(100 * 0.60 / 0.80)
-    assert pivot.loc["sst2", "All attention"] == pytest.approx(100 * 0.72 / 0.80)
+    assert pivot.loc["sst2", "W_q"] == pytest.approx(100 * 0.60)
+    assert pivot.loc["sst2", "All attention"] == pytest.approx(100 * 0.72)
 
 
 def test_build_ablation_delta_data_measures_drop_from_full_attention():

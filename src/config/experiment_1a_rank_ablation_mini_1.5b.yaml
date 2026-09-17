@@ -1,12 +1,12 @@
 experiment: exp1a_rank_ablation_mini_1.5b
 description: >
   Same tiny smoke-test as experiment_1a_rank_ablation_mini.yaml (3 tasks x
-  6 LoRA ranks, ~32 training examples, 1 epoch per run), but on
+  3 LoRA ranks, ~32 training examples, 1 epoch per run), but on
   qwen2.5-1.5b-instruct instead of the 0.5b model. Purpose: get a real
   elapsed_seconds data point per run at 1.5b scale (recorded in
   metrics.jsonl) to calibrate expected runtime before committing to the
-  full 18-run experiment_1a sweep at this model size -- see the "Model
-  size sweet spot" discussion in project notes. Accuracy numbers from this
+  full experiment_1a sweep at this model size -- see the "Model size
+  sweet spot" discussion in project notes. Accuracy numbers from this
   config are meaningless (barely any training data) — only the timing and
   wiring matter here.
 model:
@@ -32,20 +32,8 @@ methods:
     alpha: 2
     target_modules: [q_proj, v_proj]
   - type: lora
-    rank: 2
-    alpha: 4
-    target_modules: [q_proj, v_proj]
-  - type: lora
-    rank: 4
-    alpha: 8
-    target_modules: [q_proj, v_proj]
-  - type: lora
     rank: 8
     alpha: 16
-    target_modules: [q_proj, v_proj]
-  - type: lora
-    rank: 16
-    alpha: 32
     target_modules: [q_proj, v_proj]
   - type: lora
     rank: 64
