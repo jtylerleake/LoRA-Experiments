@@ -36,20 +36,21 @@ methods:
     rank: 8
     alpha: 16
     target_modules: [v_proj]
-  - type: lora  # W_o only
-    rank: 8
-    alpha: 16
-    target_modules: [o_proj]
+    
+  # - type: lora  # W_o only
+    # rank: 8
+    # alpha: 16
+    # target_modules: [o_proj]
 
   # Pairs
-  - type: lora  # W_q + W_k
-    rank: 8
-    alpha: 16
-    target_modules: [q_proj, k_proj]
-  - type: lora  # W_q + W_v
-    rank: 8
-    alpha: 16
-    target_modules: [q_proj, v_proj]
+  # - type: lora  # W_q + W_k
+    # rank: 8
+    # alpha: 16
+    # target_modules: [q_proj, k_proj]
+  # - type: lora  # W_q + W_v
+    # rank: 8
+    # alpha: 16
+    # target_modules: [q_proj, v_proj]
 
   # Grouped
   - type: lora  # all attention (q+k+v+o) -- also the ablation delta plot's baseline
