@@ -99,6 +99,20 @@ def test_exp1a_mini_mirrors_full_structure_but_capped():
     assert mini.output_subdir != full.output_subdir
 
 
+def test_exp1a_mini_1_5b_mirrors_0_5b_mini_shape_with_bigger_model():
+    """Same tiny scale as the 0.5b mini -- only the model changes -- so its
+    elapsed_seconds in metrics.jsonl is an apples-to-apples runtime
+    comparison for calibrating whether to run the full sweep at 1.5b.
+    """
+    mini_0_5b = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1a_rank_ablation_mini.yaml")
+    mini_1_5b = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_1a_rank_ablation_mini_1.5b.yaml")
+    assert mini_1_5b.model.name == "qwen2.5-1.5b-instruct"
+    assert mini_1_5b.tasks == mini_0_5b.tasks
+    assert [m.rank for m in mini_1_5b.methods] == [m.rank for m in mini_0_5b.methods]
+    assert mini_1_5b.training == mini_0_5b.training
+    assert mini_1_5b.output_subdir != mini_0_5b.output_subdir
+
+
 def test_exp2_full_and_mini_share_target_module_sweep():
     full = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_2_matrix_study.yaml")
     mini = ExperimentConfig.from_yaml(CONFIG_DIR / "experiment_2_matrix_study_mini.yaml")
