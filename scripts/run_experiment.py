@@ -16,8 +16,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from utils.logging_utils import get_logger, silence_library_noise
+
+# Must run before transformers/datasets/huggingface_hub are imported
+# anywhere else (including transitively, e.g. via config.schema below) —
+# some of what it sets only takes effect if set before those libraries'
+# own logging is first initialized. See silence_library_noise's docstring
+# for why this exists: without it, a full sweep prints enough raw model-
+# loading/dataset-download output to crash the browser tab rendering
+# Colab's output cell.
+silence_library_noise()
+
 from config.schema import ExperimentConfig, MethodSpec
-from utils.logging_utils import get_logger
 from utils.seeding import set_seed
 
 log = get_logger(__name__)

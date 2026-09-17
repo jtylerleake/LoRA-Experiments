@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,17 +17,63 @@ def get_logger(name: str) -> logging.Logger:
     return logger
 
 
+def silence_library_noise() -> None:
+    """Call once, as early as possible in a real run (before transformers/
+    datasets/huggingface_hub are imported anywhere else, so env-var-gated
+    settings take effect) — stops them printing to the console at all.
+
+    A 18-39-run sweep otherwise prints, per run: a full model config as
+    formatted JSON, tokenizer/weight-loading messages, "some weights were
+    not initialized" boilerplate, and tqdm-based download/loading progress
+    bars from huggingface_hub — none of which go through Python's
+    `logging` module, so redirecting *that* (see `file_logging` below)
+    never touched them. Across a whole sweep this is enough raw output to
+    crash the browser tab rendering Colab's output cell, which is exactly
+    what happened before this fix — suppress at the source instead of
+    trying to redirect it after the fact.
+    """
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("DATASETS_VERBOSITY", "error")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+    try:
+        import transformers.utils.logging as hf_logging
+
+        hf_logging.set_verbosity_error()
+        hf_logging.disable_progress_bar()
+    except ImportError:
+        pass
+
+    try:
+        import datasets.utils.logging as ds_logging
+
+        ds_logging.set_verbosity_error()
+        ds_logging.disable_progress_bar()
+    except ImportError:
+        pass
+
+    try:
+        import huggingface_hub.utils as hf_hub_utils
+
+        hf_hub_utils.disable_progress_bars()
+    except (ImportError, AttributeError):
+        pass
+
+
 @contextmanager
 def file_logging(log_path: str | Path):
-    """Route verbose logging (transformers/datasets internals, plus anything
-    logged through a plain `logging.getLogger(...)` with no handler of its
-    own) to `log_path` instead of the console, for the duration of the
-    `with` block.
+    """Route anything logged through a plain `logging.getLogger(...)` (with
+    no handler of its own — e.g. training/common.py's per-run run_logger)
+    to `log_path` instead of nowhere, for the duration of the `with` block.
 
-    Used to keep a long Colab training run's console output down to just the
-    compact progress bars in training/common.py, while every step's detail
-    is still captured to a file under the run's output directory for later
-    inspection.
+    This only captures *our own* run-scoped logging (per-step loss, run
+    start/end); call `silence_library_noise()` once beforehand to stop
+    transformers/datasets/hub noise at the source instead — trying to
+    redirect that here too, after the fact, previously missed most of it
+    (model loading happens before this context is even entered) and didn't
+    compose safely with nesting.
     """
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,35 +86,9 @@ def file_logging(log_path: str | Path):
     root.addHandler(handler)
     root.setLevel(logging.INFO)
 
-    # transformers manages its own StreamHandler + verbosity separately from
-    # the root logger, so it needs pointing at our file handler explicitly.
-    hf_logging = None
-    try:
-        import transformers.utils.logging as hf_logging
-
-        hf_logging.disable_default_handler()
-        hf_logging.add_handler(handler)
-        hf_logging.set_verbosity_info()
-    except ImportError:
-        pass
-
-    # datasets just uses plain `logging.getLogger(...)` under the hood (no
-    # separate default handler to redirect), so it already propagates to the
-    # root handler above — only its verbosity and progress bars need setting.
-    try:
-        import datasets.utils.logging as ds_logging
-
-        ds_logging.set_verbosity_info()
-        ds_logging.disable_progress_bar()
-    except ImportError:
-        pass
-
     try:
         yield
     finally:
         root.removeHandler(handler)
         root.setLevel(previous_root_level)
-        if hf_logging is not None:
-            hf_logging.remove_handler(handler)
-            hf_logging.enable_default_handler()
         handler.close()

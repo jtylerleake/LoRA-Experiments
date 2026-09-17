@@ -4,11 +4,14 @@ of which method module produced the trainable model.
 
 Console output is kept to a couple of continuously-updating progress bars
 (one for the training steps, one for the generation-based eval) instead of
-the library's default per-logging-step printouts — a 21-run task x rank
-sweep would otherwise flood a Colab cell with thousands of lines. Full
-detail (every logged step, library internals) still goes to
-`<run_dir>/train.log` via utils.logging_utils.file_logging, so nothing is
-actually lost.
+the library's default per-logging-step printouts and model-loading/
+download noise — a run_experiment.py sweep of dozens of runs would
+otherwise print enough raw output to crash the browser tab rendering a
+Colab output cell. Library noise (transformers/datasets/huggingface_hub)
+is silenced at the source by utils.logging_utils.silence_library_noise(),
+called once at the top of run_experiment.py; our own per-step training
+detail still goes to `<run_dir>/train.log` via
+utils.logging_utils.file_logging, so that part isn't lost, just moved.
 """
 from __future__ import annotations
 

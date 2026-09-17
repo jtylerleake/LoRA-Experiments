@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,7 +34,7 @@ from training.common import (
     compute_logging_steps,
     target_modules_slug,
 )
-from utils.logging_utils import file_logging
+from utils.logging_utils import file_logging, silence_library_noise
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = REPO_ROOT / "src" / "config"
@@ -297,6 +298,35 @@ def test_file_logging_captures_info_messages_to_file(tmp_path):
     # further logging shouldn't keep appending to the same run's log.
     probe.info("this should not be appended")
     assert "this should not be appended" not in log_path.read_text(encoding="utf-8")
+
+
+def test_silence_library_noise_sets_env_vars_and_quiets_libraries(monkeypatch):
+    """Regression test: a full sweep was crashing the Colab browser tab
+    because model config dumps, tokenizer/weight-loading messages, and
+    huggingface_hub's tqdm-based download progress bars were never
+    suppressed -- file_logging() only ever redirected Python `logging`
+    calls made *during* training, which is too late (model loading happens
+    before that) and doesn't touch hub's tqdm bars at all (not logging-based).
+    """
+    for var in (
+        "TRANSFORMERS_VERBOSITY",
+        "TRANSFORMERS_NO_ADVISORY_WARNINGS",
+        "HF_HUB_DISABLE_PROGRESS_BARS",
+        "DATASETS_VERBOSITY",
+        "TOKENIZERS_PARALLELISM",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    silence_library_noise()
+    silence_library_noise()  # must be safe to call more than once
+
+    assert os.environ["TRANSFORMERS_VERBOSITY"] == "error"
+    assert os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] == "1"
+    assert os.environ["DATASETS_VERBOSITY"] == "error"
+
+    import transformers.utils.logging as hf_logging
+
+    assert hf_logging.get_verbosity() == hf_logging.ERROR
 
 
 def test_compact_progress_callback_logs_steps_to_file(tmp_path):
