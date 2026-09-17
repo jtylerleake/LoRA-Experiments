@@ -19,12 +19,26 @@ environment that installs the same pinned dependencies from
    from google.colab import drive
    drive.mount('/content/drive')
    ```
-3. **Get the code onto the runtime** from the public GitHub remote:
+3. **Authenticate with the Hugging Face Hub** using a token stored in
+   Colab's Secrets (key icon in the left sidebar), so model/dataset
+   downloads don't hit the "sending unauthenticated requests" warning and
+   its lower rate limit. Requires a secret named `HF_TOKEN` with "Notebook
+   access" enabled for the notebook (a toggle in the Secrets panel):
+   ```python
+   from google.colab import userdata
+   import os
+   os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
+   ```
+   `huggingface_hub`/`transformers`/`datasets` all read `HF_TOKEN` from the
+   environment automatically, and since it's set via `os.environ` it's
+   inherited by every `!python ...` subprocess cell for the rest of the
+   session too — no per-cell repetition needed.
+4. **Get the code onto the runtime** from the public GitHub remote:
    ```bash
    !git clone https://github.com/jtylerleake/LoRA-Experiments.git /content/lora_experiments
    %cd /content/lora_experiments
    ```
-4. **Install dependencies on top of Colab's preinstalled, CUDA-matched
+5. **Install dependencies on top of Colab's preinstalled, CUDA-matched
    torch** — do not `pip install torch` here, it can break Colab's CUDA
    setup. Also remove Colab's preinstalled `torchao` (a quantization
    library we don't use — our quantization backend is bitsandbytes):
@@ -37,7 +51,7 @@ environment that installs the same pinned dependencies from
    !pip install -q -e .
    !pip uninstall -y -q torchao
    ```
-5. **Run an experiment**, pointing output at Drive:
+6. **Run an experiment**, pointing output at Drive:
    ```bash
    !python scripts/run_experiment.py \
        --config src/config/experiment_1_rank_ablation.yaml \
