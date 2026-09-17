@@ -288,9 +288,4 @@ def train_and_evaluate(
             elapsed,
         )
 
-    print(
-        f"[{run_name}] done in {elapsed:.0f}s — accuracy={accuracy:.4f}, "
-        f"trainable={trainable_params:,}/{total_params:,} ({100 * metrics['trainable_param_pct']:.2f}%), "
-        f"log={log_path}"
-    )
     return metrics

@@ -63,6 +63,27 @@ def silence_library_noise() -> None:
 
 
 @contextmanager
+def quiet_console(logger: logging.Logger):
+    """Temporarily detach `logger`'s own handlers (its direct-to-stdout
+    StreamHandler from get_logger, plus any others) for the duration of the
+    `with` block, so nothing it logs reaches the console -- used around
+    Colab's real (GPU) runs, where tqdm progress bars must be the only
+    thing that renders in the notebook output cell. `logger` still
+    propagates to the root logger as usual, so anything routed through
+    `file_logging` at the same time is unaffected -- only the direct
+    console handler is removed.
+    """
+    removed = list(logger.handlers)
+    for handler in removed:
+        logger.removeHandler(handler)
+    try:
+        yield
+    finally:
+        for handler in removed:
+            logger.addHandler(handler)
+
+
+@contextmanager
 def file_logging(log_path: str | Path):
     """Route anything logged through a plain `logging.getLogger(...)` (with
     no handler of its own — e.g. training/common.py's per-run run_logger)
