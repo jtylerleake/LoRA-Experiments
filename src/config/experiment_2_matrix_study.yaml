@@ -18,10 +18,10 @@ tasks:
 output_subdir: exp2_matrix_study
 seed: 42
 methods:
-  - type: full_ft
+  # - type: full_ft
     # Full fine-tuning needs a much smaller LR than LoRA to stay stable.
     # Also the 100% baseline plot_matrix_study_results.py normalizes against.
-    learning_rate: 2.0e-5
+    # learning_rate: 2.0e-5
 
   # Individual matrices
   - type: lora  # W_q only
