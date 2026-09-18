@@ -115,11 +115,24 @@ for classification tasks):
   training examples, 1 epoch) that smoke-tests the full pipeline in
   minutes before committing GPU time to the real sweep.
 
-**Experiment 4** (test-time tuning on ARC-AGI-style tasks) is still a stub:
-`data/arc_agi.py` and `training/test_time_tuning.py` raise
-`NotImplementedError`. `scripts/sync_outputs.py` (pulling metrics back from
-Drive automatically) is also still a stub — downloading `metrics.jsonl` by
-hand from Drive is the current substitute.
+**Experiment 4** (test-time adaptation) targets a pretrained **Latent Program
+Network** (Bonnet & Macfarlane, "Searching Latent Program Spaces") on its
+**Pattern-2D** task instead of an HF/PyTorch model — LPN is JAX/Flax, so this
+is a separate pipeline (`src/lpn_exp/`, `scripts/run_exp4.py`,
+`src/config/exp4_lpn_pattern2d.yaml`) that doesn't go through
+`config/schema.py`'s `ExperimentConfig`, `models/registry.py`, or
+`training/common.py` — see `CLAUDE-CODING-SKILL.md` for why. It compares
+three test-time conditions on the same fixed set of generated tasks: `mean`
+(no adaptation), `gradient_ascent` (the paper's own search over the 2D
+latent vector), and `lora_ascent` (ours — a per-task LoRA adapter fit on
+the decoder's MLP weights instead of the latent, via a functional
+params-pytree patch rather than PEFT, since PEFT only wraps PyTorch
+modules). Colab-only, with its own bootstrap cell in
+`notebooks/exp4_test_time_tuning.ipynb` (JAX/Flax/Optax + the `lpn` repo
+itself, not `docker/requirements/`). `scripts/sync_outputs.py` (pulling
+metrics back from Drive automatically) is still a stub, shared across every
+experiment — downloading `metrics.jsonl` by hand from Drive is the current
+substitute.
 
 ## Note on the LoRA library
 

@@ -62,6 +62,17 @@ environment that installs the same pinned dependencies from
 `notebooks/colab_bootstrap.ipynb` contains exactly these cells; each
 `notebooks/expN_*.ipynb` repeats the pattern pointed at its own config.
 
+**Exception: experiment 4** doesn't follow any of the steps above. It
+targets a pretrained JAX/Flax model (LPN) instead of an HF/PyTorch one, so
+it has its own bootstrap cell in `notebooks/exp4_test_time_tuning.ipynb`
+(clones `clement-bonnet/lpn` separately, installs its pinned
+jax/flax/optax instead of `docker/requirements/colab.txt`, no `HF_TOKEN`
+needed since its checkpoint is a public repo) and its own entrypoint,
+`scripts/run_exp4.py` — not `run_experiment.py`. Run it in its own Colab
+session, not one that's already installed the PyTorch/`peft` stack for
+experiments 1-3. See `CLAUDE-CODING-SKILL.md` for why experiment 4 needed a
+separate pipeline at all.
+
 ## Smoke-testing before a full sweep
 
 Before committing GPU time to the full `experiment_1_rank_ablation.yaml`

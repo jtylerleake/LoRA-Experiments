@@ -26,6 +26,7 @@ from eval.metrics import (
     extract_final_answer,
     task_accuracy,
 )
+from lpn_exp.lora import find_decoder_mlp_kernel_paths, merge_lora
 from models.registry import get_model_spec
 from training.adapters import build_adapter_model
 from training.common import (
@@ -239,6 +240,91 @@ def test_build_adapter_model_freezes_base_and_starts_as_identity():
     # start of training.
     after = model(x)
     assert torch.allclose(before, after, atol=1e-6)
+
+
+def _fake_lpn_params():
+    import numpy as np
+
+    return {
+        "decoder": {
+            "TransformerLayer_0": {
+                "MlpBlock_0": {
+                    "Dense_0": {"kernel": np.arange(6.0).reshape(2, 3)},
+                    "Dense_1": {"kernel": np.arange(6.0).reshape(3, 2)},
+                },
+            },
+            "context_embed": {"kernel": np.ones((2, 3))},
+        },
+        "encoder": {
+            "Dense_0": {"kernel": np.ones((3, 2))},
+        },
+    }
+
+
+def test_find_decoder_mlp_kernel_paths_finds_only_decoder_mlp_kernels():
+    """Regression test: experiment 4's LoRA targets only the decoder's
+    MlpBlock Dense kernels (see src/lpn_exp/lora.py) -- it must not pick up
+    the decoder's context_embed layer or anything in the encoder, since
+    those aren't part of the targeted low-rank update.
+    """
+    params = _fake_lpn_params()
+    paths = find_decoder_mlp_kernel_paths(params)
+    assert paths == [
+        ("decoder", "TransformerLayer_0", "MlpBlock_0", "Dense_0", "kernel"),
+        ("decoder", "TransformerLayer_0", "MlpBlock_0", "Dense_1", "kernel"),
+    ]
+
+
+def test_merge_lora_with_zero_b_is_a_no_op():
+    """Regression test: a fresh LoRA adapter (zero-initialized `b`, see
+    src/lpn_exp/lora.py's init_lora_params) must leave the pretrained LPN
+    decoder completely unchanged before any test-time gradient-ascent steps
+    have run -- same identity-at-init principle as the PyTorch bottleneck
+    adapter above. This exercises merge_lora's pytree-patching logic with
+    plain numpy, without needing jax/flax installed (see
+    CLAUDE-CODING-SKILL.md).
+    """
+    import numpy as np
+
+    params = _fake_lpn_params()
+    paths = find_decoder_mlp_kernel_paths(params)
+    rank = 4
+    lora_params = {}
+    for path in paths:
+        kernel = params["decoder"]["TransformerLayer_0"]["MlpBlock_0"][path[-2]]["kernel"]
+        in_dim, out_dim = kernel.shape
+        lora_params[path] = {"a": np.ones((in_dim, rank)), "b": np.zeros((rank, out_dim))}
+
+    merged = merge_lora(params, lora_params, scale=1.0)
+
+    for path in paths:
+        original = params
+        patched = merged
+        for key in path:
+            original, patched = original[key], patched[key]
+        np.testing.assert_array_equal(patched, original)
+
+
+def test_merge_lora_adds_low_rank_update_when_b_is_nonzero():
+    import numpy as np
+
+    params = _fake_lpn_params()
+    path = ("decoder", "TransformerLayer_0", "MlpBlock_0", "Dense_0", "kernel")
+    a = np.array([[1.0, 0.0], [0.0, 1.0]])
+    b = np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
+    lora_params = {path: {"a": a, "b": b}}
+
+    merged = merge_lora(params, lora_params, scale=2.0)
+
+    original_kernel = params["decoder"]["TransformerLayer_0"]["MlpBlock_0"]["Dense_0"]["kernel"]
+    expected = original_kernel + 2.0 * (a @ b)
+    np.testing.assert_array_equal(
+        merged["decoder"]["TransformerLayer_0"]["MlpBlock_0"]["Dense_0"]["kernel"], expected
+    )
+    # Untouched leaves elsewhere in the pytree are unchanged.
+    np.testing.assert_array_equal(
+        merged["decoder"]["context_embed"]["kernel"], params["decoder"]["context_embed"]["kernel"]
+    )
 
 
 def test_extract_final_answer_parses_gsm8k_format():
