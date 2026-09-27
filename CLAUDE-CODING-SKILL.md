@@ -207,3 +207,36 @@ non-PyTorch model:
   it should match the old eager code exactly. The jitted version can still
   differ on the odd task, because XLA's float reassociation can flip a
   near-tie in the greedy decode. That's expected, not a bug.
+- **When comparing a new adaptation method against a paper's baseline,
+  match everything except the thing being compared.** Exp4's first LoRA
+  version differed from the paper's gradient ascent on four axes at once:
+  objective (leave-one-out + KL vs. all-pairs likelihood), gradient
+  clipping, last step vs. best step, and resampled vs. fixed latent noise.
+  So a gap between them couldn't be pinned on "weights vs. latent".
+  Unclipped SGD at the latent's lr also diverged on some rounds (context
+  loss up 180-320x). Read the baseline's optimizer code, not just its
+  docstring, and reuse its exact chain, objective, and step selection.
+  Then tune each condition's lr separately, on tasks from a different seed
+  than the evaluation.
+- **Check a procedurally generated eval for test examples that duplicate
+  the context.** Pattern-2D has only 9 pattern positions, so ~30% of
+  leave-one-out rounds hold out a pair identical to one of their own
+  context pairs. Any method that fits the context is then trained on the
+  test example, and higher-capacity methods benefit more. Report
+  clean-only rounds next to the paper's all-rounds protocol, and select
+  hyperparameters on clean rounds.
+- **Resuming a sweep safely takes three pieces, not just "skip rows that
+  exist".**
+  - Fingerprint each row with every setting that affects its result, so a
+    changed config redoes the work instead of reusing stale rows. Leave out
+    settings like batch size that don't affect results.
+  - Derive each task's random key from (seed, task_id) alone. A sequential
+    `split` chain gives a resumed run a different key than an
+    uninterrupted one.
+  - When reading, drop a truncated last line and cut it from the file, or
+    the next append glues onto the fragment.
+
+  Put the skip check before the heavy imports, and the resume path becomes
+  testable in the CPU image (see `test_run_exp4_resume_*`). When batching
+  with `vmap`, pad a short final batch to the full size so there's one
+  compile, not two.

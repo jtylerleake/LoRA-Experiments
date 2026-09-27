@@ -3,53 +3,58 @@
 (`lora_ascent_decoder`, `lora_ascent_encoder`, `lora_ascent_encoder_decoder`
 -- see lpn_exp.lora.LORA_CONDITION_TARGETS).
 
-Reuses LPN's own two public entry points rather than reimplementing its
-internals:
-  - `LPN.__call__` (its training-time forward pass): given a task's demo
-    pairs, returns the leave-one-out reconstruction loss/metrics for a given
-    `mode`. This is exactly "the leave-one-out demo-pair objective" every
-    LoRA-ascent condition gradient-ascends -- called with only the LoRA
-    `(a, b)` pytree as the differentiated argument, everything else
-    (including the pretrained weights) held fixed. That
-    forward pass runs the encoder (pairs -> latents) *and* the decoder
-    (latent + input -> output), so gradients reach LoRA factors in either
-    submodule with no special-casing.
-  - `LPN.generate_output` (its inference entrypoint, `method=model.
-    generate_output`): given context pairs + one query input, decodes the
-    predicted output grid under a given `mode`. Used to score every
-    condition. For the LoRA conditions it's called with `mode="mean"`
-    against the LoRA-patched params: an encoder adapter changes the latent
-    the context pairs are encoded to, a decoder adapter changes how that
-    latent is decoded, and the encoder+decoder variant does both.
-
 Every pair in a task takes a turn as the held-out target (the rest as
-context), matching pattern2d_tasks.py's evaluation convention.
+context), matching pattern2d_tasks.py's evaluation convention. Evaluators
+return one result per round, so rounds whose held-out pair duplicates a
+context pair can be reported separately (pattern2d_tasks.clean_round_mask).
 
-Performance: each condition's whole per-task computation -- every
-leave-one-out round (`jax.vmap`ed, not a Python loop) and, for the LoRA
-conditions, every adaptation step (`jax.lax.scan`) -- is one `jax.jit`ed
-call. The `build_*_evaluator` factories compile it once per condition and
-reuse it for every task (every task has the same array shapes), so only the
-first task per condition pays the compile. Running this eagerly, op by op,
-left the GPU mostly idle waiting on Python dispatch for a model this small.
-Params are passed to the jitted function as arguments rather than closed
-over, so they aren't baked into the compiled program as constants.
+`mean` and `gradient_ascent` are LPN's own inference modes, run through its
+public `LPN.generate_output` unmodified.
 
-Random keys are derived exactly as the original sequential per-round loop
-did (see `_split_chain`), so these compiled evaluators reproduce that
-loop's results for the same input key.
+The LoRA-ascent conditions are built to differ from `gradient_ascent` in
+exactly one way -- *what* gets optimized (a low-rank update to MLP weights
+instead of the 2D latent). Everything else mirrors lpn's
+`_get_gradient_ascent_context`:
+  - Objective: the decoder log-likelihood of every context pair given one
+    shared context latent -- the mean of the context pairs' latents, sampled
+    from the encoder's posterior -- summed over the pairs
+    (`_context_log_prob`). With an encoder adapter, the latent itself moves
+    too, since it's re-encoded through the patched encoder.
+  - Optimizer: SGD with gradients clipped to global norm 1.0, ascending the
+    log-likelihood.
+  - Step selection: every candidate is scored on that objective -- the
+    starting point (the unadapted model, since LoRA's `b` starts at zero)
+    and each step's result -- and the best is kept, not the last. So, like
+    gradient ascent, it can never end worse on its own objective than
+    where it started.
+The latent-sampling noise is fixed per round, with the same key split
+`LPN.generate_output` uses, so the objective is deterministic across steps
+(as gradient ascent's is), and the final decode uses exactly the latent the
+objective scored. Every condition gets the same per-round keys for a given
+task key, so with no adaptation (b=0) a LoRA condition reproduces `mean`
+exactly, and gradient ascent starts from the same latent.
+
+Performance: each condition's whole computation for a batch of tasks --
+every task (`jax.vmap`), every round (`jax.vmap`), and every adaptation step
+(`jax.lax.scan`) -- is one `jax.jit`ed call, compiled once per condition and
+reused for every batch. A short final batch is padded with copies of its
+last task so every call has the same shape (and so the same compiled
+program); the padding's results are dropped. Params are passed as arguments
+rather than closed over, so they aren't baked into the compiled program as
+constants.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
-from lpn_exp.lora import find_mlp_kernel_paths, init_lora_params, merge_lora
+from lpn_exp.lora import LORA_CONDITION_TARGETS, find_mlp_kernel_paths, init_lora_params, merge_lora
 from lpn_exp.pattern2d_tasks import Pattern2DTask, task_to_arrays
 
-# (task, key) -> (accuracy, pixel_correctness), each averaged over the task's
-# leave-one-out rounds.
-TaskEvaluator = Callable[[Pattern2DTask, Any], tuple[float, float]]
+# (tasks, one key per task) -> for each task, (per-round accuracy, per-round
+# pixel_correctness), one entry per leave-one-out round in the order
+# pattern2d_tasks.clean_round_mask uses. At most `batch_size` tasks per call.
+BatchEvaluator = Callable[[list[Pattern2DTask], list[Any]], list[tuple[list[float], list[float]]]]
 
 
 class LeaveOneOutRounds(NamedTuple):
@@ -142,18 +147,62 @@ def _generate_and_score(model, params, round_: LeaveOneOutRounds, key, mode: str
     )
 
 
-def _as_task_evaluator(jitted, params, max_rows: int, max_cols: int) -> TaskEvaluator:
-    def evaluate(task: Pattern2DTask, key) -> tuple[float, float]:
-        grids, shapes = task_to_arrays(task, max_rows, max_cols)
-        accuracy, pixel_correctness = jitted(params, grids, shapes, key)
-        return float(accuracy), float(pixel_correctness)
+def _context_log_prob(lpn, pairs, grid_shapes, key):
+    """Gradient ascent's objective, as a Flax `method=` function: the decoder
+    log-likelihood of every context pair given one shared context latent.
+
+    Mirrors `LPN.generate_output` up to its search step (encode the pairs,
+    sample latents from the posterior with the same `key` split, take their
+    mean -- `_prepare_latents_before_search`'s default starting point) and
+    then `_get_gradient_ascent_context`'s `log_probs_fn` (repeat that latent
+    per pair, decode with teacher forcing, `_compute_log_probs` summed over
+    the pairs). Batch of one: returns shape (1,).
+    """
+    import jax
+
+    latents_mu, latents_logvar = lpn.encoder(pairs, grid_shapes, True)
+    if latents_logvar is not None:
+        _, key_latents = jax.random.split(key)  # the split generate_output does
+        latents, *_ = lpn._sample_latents(latents_mu, latents_logvar, key_latents)
+    else:
+        latents = latents_mu
+    input_seq, output_seq = lpn._flatten_input_output_for_decoding(pairs, grid_shapes)
+    context = latents.mean(axis=-2)[..., None, :].repeat(output_seq.shape[-2], axis=-2)
+    row_logits, col_logits, grid_logits = lpn.decoder(input_seq, output_seq, context, dropout_eval=True)
+    return lpn._compute_log_probs(row_logits, col_logits, grid_logits, output_seq)
+
+
+def _as_batch_evaluator(evaluate_one, params, max_rows: int, max_cols: int, batch_size: int) -> BatchEvaluator:
+    """Wraps a single-task `evaluate_one(params, grids, shapes, key)` into a
+    jitted, task-vmapped evaluator over batches of up to `batch_size` tasks.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    jitted = jax.jit(jax.vmap(evaluate_one, in_axes=(None, 0, 0, 0)))
+
+    def evaluate(tasks: list[Pattern2DTask], keys: list[Any]) -> list[tuple[list[float], list[float]]]:
+        if not 0 < len(tasks) <= batch_size or len(keys) != len(tasks):
+            raise ValueError(f"Need 1-{batch_size} tasks with one key each; got {len(tasks)} tasks, {len(keys)} keys")
+        arrays = [task_to_arrays(task, max_rows, max_cols) for task in tasks]
+        padding = batch_size - len(tasks)  # repeat the last task: one shape, one compile
+        grids = jnp.stack([g for g, _ in arrays] + [arrays[-1][0]] * padding)
+        shapes = jnp.stack([s for _, s in arrays] + [arrays[-1][1]] * padding)
+        batch_keys = jnp.stack(list(keys) + [keys[-1]] * padding)
+        accuracies, pixel_corrects = jitted(params, grids, shapes, batch_keys)
+        accuracies, pixel_corrects = np.asarray(accuracies), np.asarray(pixel_corrects)
+        return [
+            ([float(a) for a in accuracies[i]], [float(p) for p in pixel_corrects[i]])
+            for i in range(len(tasks))
+        ]
 
     return evaluate
 
 
 def build_mean_or_gradient_ascent_evaluator(
-    model, params, max_rows: int, max_cols: int, mode: str, mode_kwargs: dict
-) -> TaskEvaluator:
+    model, params, max_rows: int, max_cols: int, mode: str, mode_kwargs: dict, batch_size: int
+) -> BatchEvaluator:
     """Scores one of LPN's own inference modes ("mean" or "gradient_ascent")
     against every pair of a task, unmodified from the paper's own mechanism.
     """
@@ -162,14 +211,13 @@ def build_mean_or_gradient_ascent_evaluator(
     def evaluate(params, grids, shapes, key):
         rounds = _leave_one_out_rounds(grids, shapes)
         round_keys = _split_chain(key, grids.shape[0])
-        accuracies, pixel_corrects = jax.vmap(
+        return jax.vmap(
             lambda round_, round_key: _generate_and_score(
                 model, params, round_, round_key, mode, mode_kwargs
             )
         )(rounds, round_keys)
-        return accuracies.mean(), pixel_corrects.mean()
 
-    return _as_task_evaluator(jax.jit(evaluate), params, max_rows, max_cols)
+    return _as_batch_evaluator(evaluate, params, max_rows, max_cols, batch_size)
 
 
 def build_lora_ascent_evaluator(
@@ -182,69 +230,106 @@ def build_lora_ascent_evaluator(
     scale: float,
     num_steps: int,
     lr: float,
-    prior_kl_coeff: float,
-) -> TaskEvaluator:
+    batch_size: int,
+) -> BatchEvaluator:
     """Our test-time adaptation conditions: for each held-out pair, fit a
     fresh per-round LoRA adapter on the MLP kernels of `target_modules`
     (`("decoder",)`, `("encoder",)`, or `("encoder", "decoder")` -- see
-    lpn_exp.lora.LORA_CONDITION_TARGETS) against the other pairs'
-    reconstruction objective, then encode the context and decode the
-    held-out query through the LoRA-patched model. Whichever submodule
-    isn't targeted runs with its pretrained weights unchanged.
+    lpn_exp.lora.LORA_CONDITION_TARGETS) by gradient ascent on the context
+    pairs' log-likelihood, keep the best step, then decode the held-out
+    query through the LoRA-patched model. See the module docstring for how
+    each piece mirrors the paper's gradient-ascent condition. Whichever
+    submodule isn't targeted runs with its pretrained weights unchanged.
     """
     import jax
+    import jax.numpy as jnp
     import optax
 
     target_paths = find_mlp_kernel_paths(frozen_params, target_modules)
-    optimizer = optax.sgd(lr)
+    # Same optimizer chain as lpn's _get_gradient_ascent_context (optimizer="sgd").
+    optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.sgd(learning_rate=lr))
 
-    def loss_fn(lora_params, frozen_params, context_grids, context_shapes, rng):
+    def log_prob_fn(lora_params, frozen_params, context_grids, context_shapes, key):
         patched = merge_lora(frozen_params, lora_params, scale)
-        loss, _metrics = model.apply(
+        log_probs = model.apply(
             {"params": patched},
             context_grids[None],  # batch of one -- see _generate_and_score
             context_shapes[None],
-            dropout_eval=True,
-            mode="mean",
-            prior_kl_coeff=prior_kl_coeff,
-            pairwise_kl_coeff=None,
-            rngs={"latents": rng},
+            key,
+            method=_context_log_prob,
         )
-        return loss
+        return log_probs[0]
 
-    grad_fn = jax.value_and_grad(loss_fn)  # w.r.t. lora_params only
+    value_and_grad_fn = jax.value_and_grad(log_prob_fn)  # w.r.t. lora_params only
 
-    def fit_and_score(frozen_params, round_: LeaveOneOutRounds, keys):
-        # keys: (num_steps + 2, ...) -- init, one per step, decode; the same
-        # order the original sequential loop split them in.
-        lora_params = init_lora_params(frozen_params, target_paths, rank, keys[0])
+    def fit_and_score(frozen_params, round_: LeaveOneOutRounds, key):
+        # `key` is this round's latent-sampling/decode key -- the same one the
+        # mean/gradient_ascent evaluators give this round -- so at step 0 (b=0)
+        # this is exactly the `mean` condition. The init key is derived from it.
+        init_key = jax.random.fold_in(key, 1)
+        args = (frozen_params, round_.context_grids, round_.context_shapes, key)
+        lora_params = init_lora_params(frozen_params, target_paths, rank, init_key)
 
-        def step(carry, step_key):
-            lora_params, opt_state = carry
-            # "Gradient ascent" on the paper's own likelihood objective is
-            # gradient *descent* on this `loss` (cross-entropy + KL) -- same
-            # numerical direction, just their terminology for maximizing
-            # log-likelihood.
-            _loss, grads = grad_fn(
-                lora_params, frozen_params, round_.context_grids, round_.context_shapes, step_key
+        def keep_better(best, candidate):
+            (best_params, best_log_prob), (params, log_prob) = best, candidate
+            better = log_prob > best_log_prob  # ties keep the earlier step
+            best_params = jax.tree_util.tree_map(
+                lambda b, p: jnp.where(better, p, b), best_params, params
             )
-            updates, opt_state = optimizer.update(grads, opt_state)
-            return (optax.apply_updates(lora_params, updates), opt_state), None
+            return best_params, jnp.where(better, log_prob, best_log_prob)
 
-        (lora_params, _opt_state), _ = jax.lax.scan(
-            step, (lora_params, optimizer.init(lora_params)), keys[1:-1]
+        def step(carry, _):
+            lora_params, opt_state, best = carry
+            # Scores the current params (step 0: the unadapted model) and
+            # gets the gradient for the next step in one pass.
+            log_prob, grads = value_and_grad_fn(lora_params, *args)
+            best = keep_better(best, (lora_params, log_prob))
+            # Ascent: step along +grad, i.e. feed the optimizer -grad.
+            updates, opt_state = optimizer.update(jax.tree_util.tree_map(jnp.negative, grads), opt_state)
+            return (optax.apply_updates(lora_params, updates), opt_state, best), None
+
+        init_best = (lora_params, jnp.array(-jnp.inf))
+        (lora_params, _opt_state, best), _ = jax.lax.scan(
+            step, (lora_params, optimizer.init(lora_params), init_best), None, length=num_steps
         )
-        patched_params = merge_lora(frozen_params, lora_params, scale)
-        return _generate_and_score(model, patched_params, round_, keys[-1], "mean", {})
+        best_params, _ = keep_better(best, (lora_params, log_prob_fn(lora_params, *args)))
+        patched_params = merge_lora(frozen_params, best_params, scale)
+        return _generate_and_score(model, patched_params, round_, key, "mean", {})
 
     def evaluate(frozen_params, grids, shapes, key):
-        num_rounds = grids.shape[0]
         rounds = _leave_one_out_rounds(grids, shapes)
-        keys = _split_chain(key, num_rounds * (num_steps + 2))
-        round_keys = keys.reshape(num_rounds, num_steps + 2, *keys.shape[1:])
-        accuracies, pixel_corrects = jax.vmap(fit_and_score, in_axes=(None, 0, 0))(
-            frozen_params, rounds, round_keys
-        )
-        return accuracies.mean(), pixel_corrects.mean()
+        round_keys = _split_chain(key, grids.shape[0])  # same per-round keys as mean/GA
+        return jax.vmap(fit_and_score, in_axes=(None, 0, 0))(frozen_params, rounds, round_keys)
 
-    return _as_task_evaluator(jax.jit(evaluate), frozen_params, max_rows, max_cols)
+    return _as_batch_evaluator(evaluate, frozen_params, max_rows, max_cols, batch_size)
+
+
+def build_condition_evaluator(model, params, max_rows: int, max_cols: int, condition: str, config, lr=None):
+    """The evaluator for one of the config's conditions, using `lr` if given
+    (the learning-rate sweep) or else the config's own
+    `learning_rates[condition]`. `config` is an Exp4Config.
+    """
+    if condition == "mean":
+        return build_mean_or_gradient_ascent_evaluator(
+            model, params, max_rows, max_cols, "mean", {}, config.batch_size
+        )
+    lr = config.learning_rates[condition] if lr is None else lr
+    if condition == "gradient_ascent":
+        mode_kwargs = {"num_steps": config.gradient_ascent.num_steps, "lr": lr}
+        return build_mean_or_gradient_ascent_evaluator(
+            model, params, max_rows, max_cols, "gradient_ascent", mode_kwargs, config.batch_size
+        )
+    if condition in LORA_CONDITION_TARGETS:
+        return build_lora_ascent_evaluator(
+            model,
+            params,
+            max_rows,
+            max_cols,
+            target_modules=LORA_CONDITION_TARGETS[condition],
+            rank=config.lora.rank,
+            scale=config.lora.scale,
+            num_steps=config.lora.num_steps,
+            lr=lr,
+            batch_size=config.batch_size,
+        )
+    raise ValueError(f"Unknown condition: {condition!r}")

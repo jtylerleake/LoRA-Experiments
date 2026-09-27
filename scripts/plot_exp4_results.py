@@ -1,7 +1,13 @@
-"""Generate experiment 4's condition-comparison plot from a synced metrics.jsonl
-(see src/config/exp4_lpn_pattern2d.yaml).
+"""Generate experiment 4's results table and condition-comparison plot from
+a synced metrics.jsonl (see src/config/exp4_lpn_pattern2d.yaml).
 
-Produces one plot, built with seaborn:
+  results_table.csv / results_table.md — per condition, exact-match
+  accuracy and pixel correctness pooled over two sets of rounds: "All
+  rounds" (the paper's protocol) and "Clean-only rounds" (dropping rounds
+  whose held-out pair duplicates a context pair -- see
+  pattern2d_tasks.clean_round_mask), each with a 95% bootstrap CI that
+  resamples whole tasks (rounds within a task aren't independent). Also
+  printed.
 
   condition_comparison.png — mean accuracy and pixel-correctness (bars, with
   95% CI whiskers across tasks) for each condition run: `mean` (no test-time
@@ -24,6 +30,7 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
@@ -54,6 +61,9 @@ INK = "#0b0b0b"
 MUTED = "#898781"
 GRID = "#e1e0d9"
 
+ROUND_COLUMNS = ["round_accuracy", "round_pixel_correctness", "round_is_clean"]
+SUBSETS = [("All rounds", False), ("Clean-only rounds", True)]
+
 
 def apply_theme() -> None:
     sns.set_theme(
@@ -80,15 +90,99 @@ def apply_theme() -> None:
 
 
 def load_metrics(path: Path) -> pd.DataFrame:
+    """The rows to report: for each condition, only rows from its latest
+    settings (fingerprint), one per task (the latest if a run was repeated).
+    A partial last line from a disconnect mid-write is skipped.
+    """
     records = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
+    lines = path.read_text(encoding="utf-8").split("\n")
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i != len(lines) - 1:
+                raise
+            print(f"Note: skipped a partial last line in {path} (interrupted write).")
     if not records:
         raise ValueError(f"{path} has no records to plot.")
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    missing = [c for c in [*ROUND_COLUMNS, "fingerprint"] if c not in df.columns or df[c].isna().any()]
+    if missing:
+        raise ValueError(
+            f"{path} has rows without {missing} -- written by an older version of run_exp4.py "
+            "(before per-round results, the GA-matched LoRA objective, and resume). Move that file "
+            "aside and re-run rather than mixing the two."
+        )
+    # A condition re-run with new settings (e.g. a new tuned lr) may be only
+    # partly redone; report its latest settings only, never a mix.
+    latest = df.groupby("condition")["fingerprint"].last()
+    current = df[df["fingerprint"] == df["condition"].map(latest)]
+    if len(current) < len(df):
+        print(f"Note: ignored {len(df) - len(current)} rows from conditions' earlier settings.")
+    # Keep one row per (task, condition) -- repeats would count as extra tasks.
+    deduped = current.drop_duplicates(subset=["task_id", "condition"], keep="last")
+    if len(deduped) < len(current):
+        print(f"Note: dropped {len(current) - len(deduped)} duplicate (task_id, condition) rows, kept the latest.")
+    return deduped.reset_index(drop=True)
+
+
+def _explode_rounds(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per (task, condition, round)."""
+    rounds = df[["task_id", "condition", *ROUND_COLUMNS]].explode(ROUND_COLUMNS)
+    return rounds.astype({"round_accuracy": float, "round_pixel_correctness": float, "round_is_clean": bool})
+
+
+def _pooled_with_task_bootstrap_ci(rounds: pd.DataFrame, metric: str, num_resamples: int, rng) -> tuple:
+    """Mean of `metric` pooled over rounds, with a 95% CI from resampling
+    whole tasks with replacement.
+    """
+    per_task = rounds.groupby("task_id")[metric].agg(["sum", "count"])
+    sums, counts = per_task["sum"].to_numpy(), per_task["count"].to_numpy()
+    idx = rng.integers(0, len(sums), size=(num_resamples, len(sums)))
+    boot = sums[idx].sum(axis=1) / counts[idx].sum(axis=1)
+    return sums.sum() / counts.sum(), *np.percentile(boot, [2.5, 97.5])
+
+
+def build_results_table(df: pd.DataFrame, num_resamples: int = 2000, seed: int = 0) -> pd.DataFrame:
+    """Per condition x {All rounds, Clean-only rounds}: pooled accuracy and
+    pixel correctness with task-bootstrap 95% CIs, and round/task counts.
+    """
+    rng = np.random.default_rng(seed)
+    rounds = _explode_rounds(df)
+    present = [c for c in CONDITION_ORDER if c in set(rounds["condition"])]
+    table = []
+    for condition in present:
+        for subset, clean_only in SUBSETS:
+            sub = rounds[rounds["condition"] == condition]
+            if clean_only:
+                sub = sub[sub["round_is_clean"]]
+            row = {"condition": condition, "rounds": subset, "num_rounds": len(sub), "num_tasks": sub["task_id"].nunique()}
+            for metric, name in [("round_accuracy", "accuracy"), ("round_pixel_correctness", "pixel_correctness")]:
+                if len(sub):
+                    mean, low, high = _pooled_with_task_bootstrap_ci(sub, metric, num_resamples, rng)
+                else:
+                    mean = low = high = float("nan")
+                row.update({name: mean, f"{name}_ci_low": low, f"{name}_ci_high": high})
+            table.append(row)
+    return pd.DataFrame(table)
+
+
+def results_table_markdown(table: pd.DataFrame) -> str:
+    def fmt(row, name):
+        return f"{row[name]:.3f} [{row[name + '_ci_low']:.3f}, {row[name + '_ci_high']:.3f}]"
+
+    lines = [
+        "| Condition | Rounds | Accuracy [95% CI] | Pixel correctness [95% CI] | # rounds | # tasks |",
+        "|---|---|---|---|---|---|",
+    ]
+    for _, row in table.iterrows():
+        lines.append(
+            f"| {row['condition']} | {row['rounds']} | {fmt(row, 'accuracy')} | "
+            f"{fmt(row, 'pixel_correctness')} | {row['num_rounds']} | {row['num_tasks']} |"
+        )
+    return "\n".join(lines) + "\n"
 
 
 def plot_condition_comparison(df: pd.DataFrame, out_path: Path) -> None:
@@ -146,6 +240,12 @@ def main(argv=None) -> int:
     df = load_metrics(metrics_path)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    table = build_results_table(df)
+    table.to_csv(out_dir / "results_table.csv", index=False)
+    markdown = results_table_markdown(table)
+    (out_dir / "results_table.md").write_text(markdown, encoding="utf-8")
+    print(markdown)
 
     plot_condition_comparison(df, out_dir / "condition_comparison.png")
 

@@ -128,7 +128,21 @@ latent vector), and three LoRA-ascent variants (ours — a per-task LoRA
 adapter fit on MLP weights instead of the latent, via a functional
 params-pytree patch rather than PEFT, since PEFT only wraps PyTorch
 modules): `lora_ascent_decoder` (decoder only), `lora_ascent_encoder`
-(encoder only), and `lora_ascent_encoder_decoder` (both together). Colab-only, with its own bootstrap cell in
+(encoder only), and `lora_ascent_encoder_decoder` (both together). The
+LoRA variants use the same objective, optimizer, and best-step selection as
+`gradient_ascent`: the context pairs' log-likelihood given one shared
+latent, SGD with gradients clipped to norm 1.0, and the best of the start
+plus every step. So what gets adapted is the only difference. Each
+adaptation condition's learning rate is tuned on its own seed's tasks
+(`scripts/tune_exp4_lr.py`), never the evaluation tasks. Results are
+reported over **all rounds** (the paper's protocol) and over **clean-only
+rounds**. A clean round is one whose held-out pair doesn't duplicate one of
+its own context pairs, which about 30% of Pattern-2D rounds do.
+`scripts/plot_exp4_results.py` writes the table. Runs and the sweep are
+**resumable**: after a Colab disconnect, re-run the setup cells and the
+interrupted cell. It skips everything already saved on Drive; see
+`src/lpn_exp/resume.py`. Tasks are evaluated in batches (`batch_size`), one
+jitted call per batch. Colab-only, with its own bootstrap cell in
 `notebooks/exp4_test_time_tuning.ipynb` (JAX/Flax/Optax + the `lpn` repo
 itself, not `docker/requirements/`). `scripts/sync_outputs.py` (pulling
 metrics back from Drive automatically) is still a stub, shared across every

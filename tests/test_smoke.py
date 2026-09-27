@@ -25,9 +25,13 @@ from eval.metrics import (
     extract_choice_label,
     extract_final_answer,
     task_accuracy,
+    write_metric,
 )
-from lpn_exp.config import Exp4Config
+from lpn_exp.config import ADAPTATION_CONDITIONS, Exp4Config
 from lpn_exp.lora import LORA_CONDITION_TARGETS, find_mlp_kernel_paths, merge_lora
+from lpn_exp.lr_sweep import select_best_learning_rates
+from lpn_exp.pattern2d_tasks import Pattern2DTask, clean_round_mask
+from lpn_exp.resume import read_jsonl_rows, run_fingerprint
 from models.registry import get_model_spec
 from training.adapters import build_adapter_model
 from training.common import (
@@ -374,11 +378,214 @@ def test_exp4_mini_mirrors_full_structure_but_capped():
     assert mini.gradient_ascent.num_steps <= full.gradient_ascent.num_steps
     assert mini.lora.num_steps <= full.lora.num_steps
     assert mini.output_subdir != full.output_subdir
+    assert mini.learning_rates.keys() == full.learning_rates.keys()
+    assert mini.lr_sweep.num_tasks < full.lr_sweep.num_tasks
 
 
 def test_exp4_config_rejects_unknown_condition():
     with pytest.raises(ValueError):
         Exp4Config(conditions=["mean", "lora_ascent"])
+
+
+def test_exp4_every_adaptation_condition_has_a_learning_rate():
+    config = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml")
+    assert set(config.learning_rates) == set(ADAPTATION_CONDITIONS)
+    with pytest.raises(ValueError):
+        Exp4Config(learning_rates={"gradient_ascent": 0.1})  # LoRA conditions missing
+    with pytest.raises(ValueError):
+        Exp4Config(learning_rates={**config.learning_rates, "mean": 0.1})  # mean has no lr
+
+
+def test_exp4_lr_sweep_never_uses_the_evaluation_seed():
+    with pytest.raises(ValueError):
+        Exp4Config(seed=5, lr_sweep={"seed": 5})
+
+
+def test_exp4_with_learning_rates_merges_and_validates():
+    config = Exp4Config()
+    tuned = config.with_learning_rates({"lora_ascent_encoder": 0.3})
+    assert tuned.learning_rates["lora_ascent_encoder"] == 0.3
+    assert tuned.learning_rates["gradient_ascent"] == config.learning_rates["gradient_ascent"]
+    with pytest.raises(ValueError):
+        config.with_learning_rates({"not_a_condition": 0.3})
+
+
+def _pattern_task(positions):
+    """A Pattern2DTask whose pairs place one fixed 2x2 pattern at `positions`."""
+    import numpy as np
+
+    pattern = np.array([[1, 2], [3, 4]])
+    pairs = []
+    for row, col in positions:
+        grid_in, grid_out = np.zeros((4, 4), dtype=int), np.zeros((4, 4), dtype=int)
+        grid_in[row, col] = 1
+        grid_out[row : row + 2, col : col + 2] = pattern
+        pairs.append({"input": grid_in, "output": grid_out})
+    return Pattern2DTask(task_id=0, pairs=pairs)
+
+
+def test_clean_round_mask_flags_rounds_whose_query_is_in_its_context():
+    # Pairs 0 and 2 share a position, so each is the other's duplicate.
+    task = _pattern_task([(0, 0), (1, 1), (0, 0), (2, 2)])
+    assert clean_round_mask(task) == [False, True, False, True]
+    assert clean_round_mask(_pattern_task([(0, 0), (0, 1), (1, 0), (1, 1)])) == [True] * 4
+
+
+def _sweep_row(condition, lr, accuracies, clean):
+    return {
+        "condition": condition,
+        "learning_rate": lr,
+        "round_accuracy": accuracies,
+        "round_pixel_correctness": accuracies,
+        "round_is_clean": clean,
+    }
+
+
+def test_select_best_learning_rates_scores_clean_rounds_only():
+    # lr 1.0 wins only on the leaked (unclean) round; on clean rounds 0.1 is better.
+    rows = [
+        _sweep_row("gradient_ascent", 0.1, [1.0, 1.0, 0.0], [True, True, False]),
+        _sweep_row("gradient_ascent", 1.0, [1.0, 0.0, 1.0], [True, True, False]),
+    ]
+    assert select_best_learning_rates(rows) == {"gradient_ascent": 0.1}
+
+
+def test_select_best_learning_rates_breaks_ties_toward_the_smaller_lr():
+    rows = [
+        _sweep_row("lora_ascent_decoder", 0.3, [1.0, 0.0], [True, True]),
+        _sweep_row("lora_ascent_decoder", 0.03, [0.0, 1.0], [True, True]),
+    ]
+    assert select_best_learning_rates(rows) == {"lora_ascent_decoder": 0.03}
+
+
+def test_select_best_learning_rates_falls_back_to_all_rounds_without_clean_ones():
+    rows = [
+        _sweep_row("lora_ascent_encoder", 0.1, [0.0, 0.0], [False, False]),
+        _sweep_row("lora_ascent_encoder", 1.0, [1.0, 0.0], [False, False]),
+    ]
+    assert select_best_learning_rates(rows) == {"lora_ascent_encoder": 1.0}
+
+
+def test_exp4_results_table_reports_all_and_clean_rounds():
+    from plot_exp4_results import build_results_table
+
+    df = pd.DataFrame(
+        [
+            {"task_id": 0, "condition": "mean", "round_accuracy": [1.0, 0.0, 1.0, 1.0],
+             "round_pixel_correctness": [1.0, 0.5, 1.0, 1.0], "round_is_clean": [True, True, False, False]},
+            {"task_id": 1, "condition": "mean", "round_accuracy": [0.0, 1.0, 1.0, 1.0],
+             "round_pixel_correctness": [0.5, 1.0, 1.0, 1.0], "round_is_clean": [True, True, True, True]},
+        ]
+    )
+    table = build_results_table(df, num_resamples=200).set_index("rounds")
+    assert table.loc["All rounds", "accuracy"] == pytest.approx(6 / 8)
+    assert table.loc["All rounds", "num_rounds"] == 8
+    # Clean rounds: task 0's first two (1, 0) + all four of task 1's (0, 1, 1, 1) -> 4/6.
+    assert table.loc["Clean-only rounds", "accuracy"] == pytest.approx(4 / 6)
+    assert table.loc["Clean-only rounds", "num_rounds"] == 6
+    assert table.loc["Clean-only rounds", "accuracy_ci_low"] <= 4 / 6 <= table.loc["Clean-only rounds", "accuracy_ci_high"]
+
+
+def test_read_jsonl_rows_repairs_a_partial_last_line(tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    assert read_jsonl_rows(path) == []  # missing file
+    path.write_text('{"a": 1}\n{"a": 2}\n{"a": 3, "b"', encoding="utf-8")  # cut off mid-write
+    assert read_jsonl_rows(path) == [{"a": 1}, {"a": 2}]
+    # The fragment is gone from the file, so the next append lands on its own line.
+    write_metric(path, {"a": 4})
+    assert read_jsonl_rows(path) == [{"a": 1}, {"a": 2}, {"a": 4}]
+
+
+def test_read_jsonl_rows_rejects_a_malformed_middle_line(tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    path.write_text('{"a": 1}\nnot json\n{"a": 2}\n', encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_jsonl_rows(path)
+
+
+def test_run_fingerprint_tracks_what_changes_a_result():
+    config = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml")
+    base = run_fingerprint(config, "lora_ascent_decoder", config.seed, 0.1)
+    assert run_fingerprint(config, "lora_ascent_decoder", config.seed, 0.1) == base
+    assert run_fingerprint(config, "lora_ascent_decoder", config.seed, 0.3) != base
+    assert run_fingerprint(config, "lora_ascent_encoder", config.seed, 0.1) != base
+    assert run_fingerprint(config, "lora_ascent_decoder", config.seed + 1, 0.1) != base
+    more_steps = config.model_copy(update={"lora": config.lora.model_copy(update={"num_steps": 20})})
+    assert run_fingerprint(more_steps, "lora_ascent_decoder", config.seed, 0.1) != base
+    # Batch size only changes grouping, not results; mean has no learning rate.
+    rebatched = config.model_copy(update={"batch_size": 7})
+    assert run_fingerprint(rebatched, "lora_ascent_decoder", config.seed, 0.1) == base
+    assert run_fingerprint(config, "mean", config.seed, None) == run_fingerprint(config, "mean", config.seed, 0.5)
+
+
+def _write_exp4_rows(path, config, condition, seed, lr, task_ids, **extra):
+    for task_id in task_ids:
+        write_metric(
+            path,
+            {
+                "task_id": task_id,
+                "condition": condition,
+                "learning_rate": lr,
+                "round_accuracy": [1.0, 1.0, 0.0, 1.0],
+                "round_pixel_correctness": [1.0, 1.0, 0.5, 1.0],
+                "round_is_clean": [True, True, True, False],
+                "fingerprint": run_fingerprint(config, condition, seed, lr),
+                **extra,
+            },
+        )
+
+
+def test_run_exp4_resume_skips_every_completed_run(tmp_path, caplog):
+    """With every (task, condition) already recorded, run_exp4 must finish
+    without redoing anything -- it returns before importing jax at all,
+    which this CPU test image doesn't have.
+    """
+    from run_exp4 import main as run_exp4_main
+
+    config_path = CONFIG_DIR / "exp4_lpn_pattern2d_mini.yaml"
+    config = Exp4Config.from_yaml(config_path)
+    metrics = tmp_path / config.output_subdir / "metrics.jsonl"
+    for condition in config.conditions:
+        _write_exp4_rows(metrics, config, condition, config.seed, config.learning_rates.get(condition),
+                         range(config.num_eval_tasks))
+    before = metrics.read_text(encoding="utf-8")
+    with caplog.at_level(logging.INFO):
+        assert run_exp4_main(["--config", str(config_path), "--output-root", str(tmp_path)]) == 0
+    assert "Nothing to do" in caplog.text
+    assert metrics.read_text(encoding="utf-8") == before
+
+
+def test_tune_exp4_lr_resume_resummarizes_a_finished_sweep(tmp_path):
+    from tune_exp4_lr import main as tune_main
+
+    config_path = CONFIG_DIR / "exp4_lpn_pattern2d_mini.yaml"
+    config = Exp4Config.from_yaml(config_path)
+    rows = tmp_path / f"{config.output_subdir}_lr_sweep" / "lr_sweep.jsonl"
+    for condition in ADAPTATION_CONDITIONS:
+        for lr in config.lr_sweep.learning_rates:
+            _write_exp4_rows(rows, config, condition, config.lr_sweep.seed, lr, range(config.lr_sweep.num_tasks))
+    # A stale row from other settings must be ignored, not mixed in.
+    _write_exp4_rows(rows, config, "gradient_ascent", config.lr_sweep.seed, 99.0, [0])
+    assert tune_main(["--config", str(config_path), "--output-root", str(tmp_path)]) == 0
+    best = json.loads((rows.parent / "best_learning_rates.json").read_text(encoding="utf-8"))
+    # Every lr scored identically, so ties go to the smallest.
+    assert best == {c: min(config.lr_sweep.learning_rates) for c in ADAPTATION_CONDITIONS}
+
+
+def test_plot_exp4_load_metrics_reports_only_each_conditions_latest_settings(tmp_path):
+    from plot_exp4_results import load_metrics
+
+    config = Exp4Config()
+    path = tmp_path / "metrics.jsonl"
+    _write_exp4_rows(path, config, "lora_ascent_decoder", config.seed, 0.1, [0, 1, 2])  # old lr
+    _write_exp4_rows(path, config, "lora_ascent_decoder", config.seed, 0.03, [0, 1])  # redo, cut off
+    _write_exp4_rows(path, config, "mean", config.seed, None, [0, 1, 1])  # task 1 repeated
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('{"task_id": 2, "cond')  # interrupted write
+    df = load_metrics(path)
+    lora = df[df["condition"] == "lora_ascent_decoder"]
+    assert sorted(lora["task_id"]) == [0, 1] and set(lora["learning_rate"]) == {0.03}
+    assert sorted(df[df["condition"] == "mean"]["task_id"]) == [0, 1]
 
 
 def test_extract_final_answer_parses_gsm8k_format():

@@ -14,6 +14,7 @@ checkpoint_name: "quiet-thunder-789--checkpoint:v0"
 output_subdir: exp4_lpn_pattern2d
 seed: 42
 num_eval_tasks: 96  # matches the checkpoint's own eval block (length: 96)
+batch_size: 16  # tasks per jitted call (speed only, not results)
 conditions:
   - mean
   - gradient_ascent
@@ -27,9 +28,19 @@ task_generator:
   pattern_size: 2
 gradient_ascent:
   num_steps: 10
-  lr: 0.1
 lora:  # shared by all three lora_ascent_* conditions
   rank: 4
   scale: 1.0
   num_steps: 10
-  lr: 0.1
+# Per-condition learning rates. 0.1 is the paper's own gradient-ascent lr;
+# the real runs override these with scripts/tune_exp4_lr.py's tuned values
+# (run_exp4.py --learning-rates <sweep dir>/best_learning_rates.json).
+learning_rates:
+  gradient_ascent: 0.1
+  lora_ascent_decoder: 0.1
+  lora_ascent_encoder: 0.1
+  lora_ascent_encoder_decoder: 0.1
+lr_sweep:
+  seed: 1  # must differ from `seed`: tuning never sees the evaluation tasks
+  num_tasks: 64
+  learning_rates: [0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0]

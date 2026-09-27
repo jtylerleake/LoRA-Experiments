@@ -81,3 +81,24 @@ def task_to_arrays(task: Pattern2DTask, max_rows: int, max_cols: int):
     shape = jnp.array([[max_rows, max_rows], [max_cols, max_cols]])
     shapes = jnp.broadcast_to(shape, (len(task.pairs), 2, 2))
     return grids, shapes
+
+
+def clean_round_mask(task: Pattern2DTask) -> list[bool]:
+    """One flag per leave-one-out round (round i holds out pair i, the same
+    order as test_time_adapt's rounds): True if the held-out pair appears
+    nowhere else in the task, False if an identical (input, output) pair is
+    among its own context.
+
+    Pattern-2D places its 2x2 pattern at one of only 9 positions on a 4x4
+    grid, so a held-out pair often duplicates a context pair exactly --
+    roughly 30% of rounds with 4 pairs. In such a round the answer is sitting
+    in the context, and test-time adaptation that fits the context pairs
+    (especially a LoRA adapter, which has the capacity to memorize them) is
+    effectively trained on the test example. We keep the paper's protocol
+    (every round is scored) and report clean rounds separately alongside all
+    rounds (see scripts/plot_exp4_results.py's results table).
+
+    Plain numpy only, so it's unit-testable without jax.
+    """
+    keys = [(pair["input"].tobytes(), pair["output"].tobytes()) for pair in task.pairs]
+    return [keys.count(key) == 1 for key in keys]

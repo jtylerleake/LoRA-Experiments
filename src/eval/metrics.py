@@ -7,6 +7,7 @@ local plotting, without touching checkpoints.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,10 @@ def write_metric(output_path: str | Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
+        # Push the row to the (Drive-mounted) file now rather than leaving it
+        # in a buffer, so a Colab disconnect loses as little as possible.
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def extract_final_answer(text: str) -> str | None:
