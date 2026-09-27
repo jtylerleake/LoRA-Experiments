@@ -1,21 +1,26 @@
-"""Per-task test-time adaptation and scoring, for all three conditions
-(`mean`, `gradient_ascent`, `lora_ascent`).
+"""Per-task test-time adaptation and scoring, for every condition: `mean`,
+`gradient_ascent`, and the three LoRA-ascent variants
+(`lora_ascent_decoder`, `lora_ascent_encoder`, `lora_ascent_encoder_decoder`
+-- see lpn_exp.lora.LORA_CONDITION_TARGETS).
 
 Reuses LPN's own two public entry points rather than reimplementing its
 internals:
   - `LPN.__call__` (its training-time forward pass): given a task's demo
     pairs, returns the leave-one-out reconstruction loss/metrics for a given
-    `mode`. This is exactly "the leave-one-out demo-pair objective" our
-    `lora_ascent` condition gradient-ascends -- called with only the LoRA
+    `mode`. This is exactly "the leave-one-out demo-pair objective" every
+    LoRA-ascent condition gradient-ascends -- called with only the LoRA
     `(a, b)` pytree as the differentiated argument, everything else
-    (including the pretrained weights) closed over as a constant.
+    (including the pretrained weights) closed over as a constant. That
+    forward pass runs the encoder (pairs -> latents) *and* the decoder
+    (latent + input -> output), so gradients reach LoRA factors in either
+    submodule with no special-casing.
   - `LPN.generate_output` (its inference entrypoint, `method=model.
     generate_output`): given context pairs + one query input, decodes the
     predicted output grid under a given `mode`. Used to score every
-    condition, including `lora_ascent` -- since LoRA only patches decoder
-    MLP kernels, calling this with `mode="mean"` against the LoRA-patched
-    params reuses the exact same encoder (untouched) and just decodes
-    through the adapted decoder.
+    condition. For the LoRA conditions it's called with `mode="mean"`
+    against the LoRA-patched params: an encoder adapter changes the latent
+    the context pairs are encoded to, a decoder adapter changes how that
+    latent is decoded, and the encoder+decoder variant does both.
 
 Every pair in a task takes a turn as the held-out target (the rest as
 context), matching pattern2d_tasks.py's evaluation convention.
@@ -25,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from lpn_exp.lora import find_decoder_mlp_kernel_paths, init_lora_params, merge_lora
+from lpn_exp.lora import find_mlp_kernel_paths, init_lora_params, merge_lora
 from lpn_exp.pattern2d_tasks import Pattern2DTask, task_to_arrays
 
 
@@ -75,6 +80,35 @@ def _leave_one_out_rounds(grids, shapes) -> list[LeaveOneOutRound]:
     ]
 
 
+def _generate_and_score(
+    model, params, round_: LeaveOneOutRound, key, mode: str, mode_kwargs: dict
+) -> tuple[float, float]:
+    """Decodes one round's held-out query via `LPN.generate_output` and scores it.
+
+    `generate_output` expects a leading batch axis on every argument (the
+    decoder asserts it -- see lpn's evaluate_checkpoint.py, which always calls
+    it batched), so each single round is passed as a batch of one -- except
+    `key`, which it `jax.random.split`s as a single key. Keyword
+    arguments, not positional: its signature is (pairs, grid_shapes, input,
+    input_grid_shape, key, ...), i.e. the context pairs come *first*.
+    """
+    output_grid, output_shape, _info = model.apply(
+        {"params": params},
+        pairs=round_.context_grids[None],
+        grid_shapes=round_.context_shapes[None],
+        input=round_.query_input[None],
+        input_grid_shape=round_.query_shape[None],
+        key=key,  # a single key, not batched -- generate_output splits it directly
+        dropout_eval=True,
+        mode=mode,
+        **mode_kwargs,
+        method=model.generate_output,
+    )
+    return _score_predictions(
+        output_grid, output_shape, round_.label_grid[None], round_.label_shape[None]
+    )
+
+
 def evaluate_condition_mean_or_gradient_ascent(
     model,
     params,
@@ -94,20 +128,8 @@ def evaluate_condition_mean_or_gradient_ascent(
     accuracies, pixel_corrects = [], []
     for round_ in _leave_one_out_rounds(grids, shapes):
         key, sub_key = jax.random.split(key)
-        output_grid, output_shape, _info = model.apply(
-            {"params": params},
-            round_.query_input,
-            round_.query_shape,
-            round_.context_grids,
-            round_.context_shapes,
-            sub_key,
-            dropout_eval=True,
-            mode=mode,
-            **mode_kwargs,
-            method=model.generate_output,
-        )
-        accuracy, pixel_correctness = _score_predictions(
-            output_grid[None], output_shape[None], round_.label_grid[None], round_.label_shape[None]
+        accuracy, pixel_correctness = _generate_and_score(
+            model, params, round_, sub_key, mode, mode_kwargs
         )
         accuracies.append(accuracy)
         pixel_corrects.append(pixel_correctness)
@@ -120,6 +142,7 @@ def evaluate_condition_lora_ascent(
     task: Pattern2DTask,
     max_rows: int,
     max_cols: int,
+    target_modules: tuple[str, ...],
     rank: int,
     scale: float,
     num_steps: int,
@@ -127,15 +150,18 @@ def evaluate_condition_lora_ascent(
     prior_kl_coeff: float,
     key,
 ) -> tuple[float, float]:
-    """Our test-time adaptation condition: for each held-out pair, fit a
-    fresh per-round LoRA adapter on the decoder's MLP kernels against the
-    other pairs' reconstruction objective, then decode the held-out query
-    through the LoRA-patched decoder (encoder and z-computation untouched).
+    """Our test-time adaptation conditions: for each held-out pair, fit a
+    fresh per-round LoRA adapter on the MLP kernels of `target_modules`
+    (`("decoder",)`, `("encoder",)`, or `("encoder", "decoder")` -- see
+    lpn_exp.lora.LORA_CONDITION_TARGETS) against the other pairs'
+    reconstruction objective, then encode the context and decode the
+    held-out query through the LoRA-patched model. Whichever submodule
+    isn't targeted runs with its pretrained weights unchanged.
     """
     import jax
     import optax
 
-    target_paths = find_decoder_mlp_kernel_paths(frozen_params)
+    target_paths = find_mlp_kernel_paths(frozen_params, target_modules)
     grids, shapes = task_to_arrays(task, max_rows, max_cols)
     accuracies, pixel_corrects = [], []
 
@@ -143,8 +169,8 @@ def evaluate_condition_lora_ascent(
         patched = merge_lora(frozen_params, lora_params, scale)
         loss, _metrics = model.apply(
             {"params": patched},
-            context_grids,
-            context_shapes,
+            context_grids[None],  # batch of one -- see _generate_and_score
+            context_shapes[None],
             dropout_eval=True,
             mode="mean",
             prior_kl_coeff=prior_kl_coeff,
@@ -175,19 +201,8 @@ def evaluate_condition_lora_ascent(
 
         patched_params = merge_lora(frozen_params, lora_params, scale)
         key, sub_key = jax.random.split(key)
-        output_grid, output_shape, _info = model.apply(
-            {"params": patched_params},
-            round_.query_input,
-            round_.query_shape,
-            round_.context_grids,
-            round_.context_shapes,
-            sub_key,
-            dropout_eval=True,
-            mode="mean",
-            method=model.generate_output,
-        )
-        accuracy, pixel_correctness = _score_predictions(
-            output_grid[None], output_shape[None], round_.label_grid[None], round_.label_shape[None]
+        accuracy, pixel_correctness = _generate_and_score(
+            model, patched_params, round_, sub_key, "mean", {}
         )
         accuracies.append(accuracy)
         pixel_corrects.append(pixel_correctness)

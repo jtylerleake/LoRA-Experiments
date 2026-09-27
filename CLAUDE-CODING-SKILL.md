@@ -177,3 +177,17 @@ non-PyTorch model:
   config class (still pydantic, still a `from_yaml` classmethod, for
   consistency) is clearer than adding a pile of "ignored unless you're
   experiment N" optional fields to the shared one.
+- **A vendored repo's pinned `jax`/`jaxlib` version can simply not exist
+  for Colab's current Python anymore** (confirmed: `lpn`'s pinned
+  `jaxlib==0.4.26`, from mid-2024, has no matching wheel today — `pip
+  install -r requirements.txt` aborts the *entire* file when one pin can't
+  be satisfied, silently skipping every other package in it, including
+  ones with no version problem of their own like `chex`). Same principle as
+  `colab_bootstrap.ipynb` already applies to `torch`: don't force a pinned
+  `jax`/`jaxlib` over Colab's preinstalled, CUDA-matched build — strip just
+  those two lines from the requirements file (e.g. `grep -v -E
+  '^(jax|jaxlib)=='`) and install everything else pinned as normal. Add a
+  quick `import chex; import jax; jax.devices()` print right after the
+  install cell so a broken install shows up immediately instead of several
+  cells later as a confusing `ModuleNotFoundError` deep inside the vendored
+  repo's own code.

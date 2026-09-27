@@ -11,7 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from lpn_exp.lora import LORA_CONDITION_TARGETS
+
+KNOWN_CONDITIONS = ("mean", "gradient_ascent", *LORA_CONDITION_TARGETS)
 
 
 class TaskGeneratorConfig(BaseModel):
@@ -36,10 +40,13 @@ class GradientAscentConfig(BaseModel):
 
 
 class LoRAConfig(BaseModel):
-    """Our test-time adaptation condition: freeze the pretrained decoder and
-    fit a per-task low-rank update to its MLP Dense kernels (see
-    src/lpn_exp/lora.py) via gradient ascent on the same leave-one-out
-    objective the paper's own gradient-ascent condition uses.
+    """Our test-time adaptation conditions: freeze the pretrained LPN and fit
+    a per-task low-rank update to the MLP Dense kernels of its decoder, its
+    encoder, or both (one condition each -- see src/lpn_exp/lora.py's
+    LORA_CONDITION_TARGETS) via gradient ascent on the same leave-one-out
+    objective the paper's own gradient-ascent condition uses. These
+    hyperparameters are shared by all three LoRA-ascent variants, so the
+    only thing that differs between them is which weights get adapted.
     """
 
     rank: int = 4
@@ -57,12 +64,22 @@ class Exp4Config(BaseModel):
     seed: int = 42
     num_eval_tasks: int = 96  # matches the checkpoint's own eval block (length: 96)
     # Which conditions to run and compare: "mean" (no adaptation), "gradient_ascent"
-    # (the paper's latent search), "lora_ascent" (ours). Every task is scored under
-    # every listed condition so the comparison is apples-to-apples.
-    conditions: list[str] = ["mean", "gradient_ascent", "lora_ascent"]
+    # (the paper's latent search), and ours -- "lora_ascent_decoder",
+    # "lora_ascent_encoder", "lora_ascent_encoder_decoder" (LoRA on the MLP weights
+    # of that part of the model). Every task is scored under every listed condition
+    # so the comparison is apples-to-apples.
+    conditions: list[str] = list(KNOWN_CONDITIONS)
     task_generator: TaskGeneratorConfig = TaskGeneratorConfig()
     gradient_ascent: GradientAscentConfig = GradientAscentConfig()
     lora: LoRAConfig = LoRAConfig()
+
+    @field_validator("conditions")
+    @classmethod
+    def _check_conditions(cls, conditions: list[str]) -> list[str]:
+        unknown = [c for c in conditions if c not in KNOWN_CONDITIONS]
+        if unknown:
+            raise ValueError(f"Unknown condition(s) {unknown}; expected any of {KNOWN_CONDITIONS}")
+        return conditions
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> Exp4Config:

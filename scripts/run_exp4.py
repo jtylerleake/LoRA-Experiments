@@ -1,7 +1,9 @@
 """Experiment 4 entrypoint: LPN on Pattern-2D, comparing `mean` (no
 adaptation), `gradient_ascent` (the paper's own latent-vector search), and
-`lora_ascent` (ours -- a per-task LoRA adapter on the decoder's MLP
-kernels, see src/lpn_exp/) on the same fixed, seeded set of tasks.
+three LoRA-ascent variants (ours -- a per-task LoRA adapter on the MLP
+kernels of the decoder, the encoder, or both: `lora_ascent_decoder`,
+`lora_ascent_encoder`, `lora_ascent_encoder_decoder`, see src/lpn_exp/) on
+the same fixed, seeded set of tasks.
 
 Unlike scripts/run_experiment.py, this is JAX/Flax, not PyTorch/HF -- it
 does not go through config/schema.py's ExperimentConfig or
@@ -58,6 +60,7 @@ def main(argv=None) -> int:
         from tqdm.auto import tqdm
 
         from lpn_exp.checkpoint import load_pretrained
+        from lpn_exp.lora import LORA_CONDITION_TARGETS
         from lpn_exp.pattern2d_tasks import generate_tasks
         from lpn_exp.test_time_adapt import (
             evaluate_condition_lora_ascent,
@@ -114,13 +117,14 @@ def main(argv=None) -> int:
                         mode_kwargs=ga_kwargs,
                         key=sub_key,
                     )
-                elif condition == "lora_ascent":
+                elif condition in LORA_CONDITION_TARGETS:
                     accuracy, pixel_correctness = evaluate_condition_lora_ascent(
                         model,
                         frozen_params,
                         task,
                         max_rows,
                         max_cols,
+                        target_modules=LORA_CONDITION_TARGETS[condition],
                         rank=config.lora.rank,
                         scale=config.lora.scale,
                         num_steps=config.lora.num_steps,

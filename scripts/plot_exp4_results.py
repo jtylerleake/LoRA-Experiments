@@ -6,15 +6,16 @@ Produces one plot, built with seaborn:
   condition_comparison.png — mean accuracy and pixel-correctness (bars, with
   95% CI whiskers across tasks) for each condition run: `mean` (no test-time
   adaptation), `gradient_ascent` (the paper's own latent-vector search), and
-  `lora_ascent` (ours -- a per-task LoRA adapter on the decoder, see
-  src/lpn_exp/). This is the actual point of the experiment: does adapting
-  the decoder's weights per task beat searching its latent, and does either
-  beat doing nothing.
+  the three LoRA-ascent variants (ours -- a per-task LoRA adapter on the
+  MLP weights of the decoder, the encoder, or both, see src/lpn_exp/). This
+  is the actual point of the experiment: does adapting the model's weights
+  per task beat searching its latent, which part of the model is worth
+  adapting, and does any of it beat doing nothing.
 
 Colors follow the same validated palette as scripts/plot_results.py: `mean`
-(the no-adaptation baseline) gets the neutral/muted slot, the two adaptation
-conditions get the two lead categorical hues, consistent with how this repo
-already assigns categorical color by identity, not by value.
+(the no-adaptation baseline) gets the neutral/muted slot, the four
+adaptation conditions get categorical hues 1-4, consistent with how this
+repo already assigns categorical color by identity, not by value.
 """
 from __future__ import annotations
 
@@ -26,13 +27,27 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-CONDITION_ORDER = ["mean", "gradient_ascent", "lora_ascent"]
+CONDITION_ORDER = [
+    "mean",
+    "gradient_ascent",
+    "lora_ascent_decoder",
+    "lora_ascent_encoder",
+    "lora_ascent_encoder_decoder",
+]
 CONDITION_LABELS = {
     "mean": "mean\n(no adaptation)",
     "gradient_ascent": "gradient ascent\n(latent search)",
-    "lora_ascent": "LoRA ascent\n(decoder search)",
+    "lora_ascent_decoder": "LoRA ascent\n(decoder)",
+    "lora_ascent_encoder": "LoRA ascent\n(encoder)",
+    "lora_ascent_encoder_decoder": "LoRA ascent\n(encoder + decoder)",
 }
-CONDITION_COLORS = {"mean": "#898781", "gradient_ascent": "#eb6834", "lora_ascent": "#2a78d6"}
+CONDITION_COLORS = {
+    "mean": "#898781",
+    "gradient_ascent": "#eb6834",
+    "lora_ascent_decoder": "#2a78d6",
+    "lora_ascent_encoder": "#1baf7a",
+    "lora_ascent_encoder_decoder": "#eda100",
+}
 
 SURFACE = "#fcfcfb"
 INK = "#0b0b0b"
@@ -78,7 +93,7 @@ def load_metrics(path: Path) -> pd.DataFrame:
 
 def plot_condition_comparison(df: pd.DataFrame, out_path: Path) -> None:
     present = [c for c in CONDITION_ORDER if c in df["condition"].unique()]
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
 
     metrics_and_titles = [
         ("accuracy", "Exact-match accuracy"),

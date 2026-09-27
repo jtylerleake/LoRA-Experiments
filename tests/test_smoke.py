@@ -26,7 +26,8 @@ from eval.metrics import (
     extract_final_answer,
     task_accuracy,
 )
-from lpn_exp.lora import find_decoder_mlp_kernel_paths, merge_lora
+from lpn_exp.config import Exp4Config
+from lpn_exp.lora import LORA_CONDITION_TARGETS, find_mlp_kernel_paths, merge_lora
 from models.registry import get_model_spec
 from training.adapters import build_adapter_model
 from training.common import (
@@ -256,29 +257,55 @@ def _fake_lpn_params():
             "context_embed": {"kernel": np.ones((2, 3))},
         },
         "encoder": {
+            "TransformerLayer_0": {
+                "MlpBlock_0": {
+                    "Dense_0": {"kernel": np.arange(6.0).reshape(2, 3)},
+                    "Dense_1": {"kernel": np.arange(6.0).reshape(3, 2)},
+                },
+            },
             "Dense_0": {"kernel": np.ones((3, 2))},
         },
     }
 
 
-def test_find_decoder_mlp_kernel_paths_finds_only_decoder_mlp_kernels():
-    """Regression test: experiment 4's LoRA targets only the decoder's
-    MlpBlock Dense kernels (see src/lpn_exp/lora.py) -- it must not pick up
-    the decoder's context_embed layer or anything in the encoder, since
-    those aren't part of the targeted low-rank update.
+_DECODER_MLP_PATHS = [
+    ("decoder", "TransformerLayer_0", "MlpBlock_0", "Dense_0", "kernel"),
+    ("decoder", "TransformerLayer_0", "MlpBlock_0", "Dense_1", "kernel"),
+]
+_ENCODER_MLP_PATHS = [
+    ("encoder", "TransformerLayer_0", "MlpBlock_0", "Dense_0", "kernel"),
+    ("encoder", "TransformerLayer_0", "MlpBlock_0", "Dense_1", "kernel"),
+]
+
+
+def test_find_mlp_kernel_paths_respects_each_lora_condition_target():
+    """Regression test: each of experiment 4's LoRA-ascent conditions targets
+    only the MlpBlock Dense kernels of its own submodule(s) (see
+    src/lpn_exp/lora.py's LORA_CONDITION_TARGETS) -- never the decoder's
+    context_embed, the encoder's latent heads, or the other submodule's
+    MLP kernels.
     """
     params = _fake_lpn_params()
-    paths = find_decoder_mlp_kernel_paths(params)
-    assert paths == [
-        ("decoder", "TransformerLayer_0", "MlpBlock_0", "Dense_0", "kernel"),
-        ("decoder", "TransformerLayer_0", "MlpBlock_0", "Dense_1", "kernel"),
-    ]
+    expected = {
+        "lora_ascent_decoder": _DECODER_MLP_PATHS,
+        "lora_ascent_encoder": _ENCODER_MLP_PATHS,
+        "lora_ascent_encoder_decoder": _ENCODER_MLP_PATHS + _DECODER_MLP_PATHS,
+    }
+    assert set(LORA_CONDITION_TARGETS) == set(expected)
+    for condition, modules in LORA_CONDITION_TARGETS.items():
+        assert find_mlp_kernel_paths(params, modules) == expected[condition], condition
+
+
+def test_find_mlp_kernel_paths_rejects_unknown_module():
+    params = _fake_lpn_params()
+    with pytest.raises(KeyError):
+        find_mlp_kernel_paths(params, ("decodr",))
 
 
 def test_merge_lora_with_zero_b_is_a_no_op():
     """Regression test: a fresh LoRA adapter (zero-initialized `b`, see
     src/lpn_exp/lora.py's init_lora_params) must leave the pretrained LPN
-    decoder completely unchanged before any test-time gradient-ascent steps
+    encoder and decoder completely unchanged before any test-time gradient-ascent steps
     have run -- same identity-at-init principle as the PyTorch bottleneck
     adapter above. This exercises merge_lora's pytree-patching logic with
     plain numpy, without needing jax/flax installed (see
@@ -287,11 +314,11 @@ def test_merge_lora_with_zero_b_is_a_no_op():
     import numpy as np
 
     params = _fake_lpn_params()
-    paths = find_decoder_mlp_kernel_paths(params)
+    paths = find_mlp_kernel_paths(params, ("encoder", "decoder"))
     rank = 4
     lora_params = {}
     for path in paths:
-        kernel = params["decoder"]["TransformerLayer_0"]["MlpBlock_0"][path[-2]]["kernel"]
+        kernel = params[path[0]]["TransformerLayer_0"]["MlpBlock_0"][path[-2]]["kernel"]
         in_dim, out_dim = kernel.shape
         lora_params[path] = {"a": np.ones((in_dim, rank)), "b": np.zeros((rank, out_dim))}
 
@@ -325,6 +352,19 @@ def test_merge_lora_adds_low_rank_update_when_b_is_nonzero():
     np.testing.assert_array_equal(
         merged["decoder"]["context_embed"]["kernel"], params["decoder"]["context_embed"]["kernel"]
     )
+
+
+def test_exp4_config_lists_all_three_lora_ascent_variants():
+    """exp4's YAML must validate against Exp4Config and run every LoRA-ascent
+    variant (decoder, encoder, encoder+decoder) alongside both baselines.
+    """
+    config = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml")
+    assert config.conditions == ["mean", "gradient_ascent", *LORA_CONDITION_TARGETS]
+
+
+def test_exp4_config_rejects_unknown_condition():
+    with pytest.raises(ValueError):
+        Exp4Config(conditions=["mean", "lora_ascent"])
 
 
 def test_extract_final_answer_parses_gsm8k_format():

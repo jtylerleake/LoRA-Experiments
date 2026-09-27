@@ -1,4 +1,4 @@
-"""Functional LoRA for LPN's Flax decoder.
+"""Functional LoRA for LPN's Flax encoder and/or decoder.
 
 This is the JAX/Flax analogue of `peft.LoraConfig` (used for the PyTorch
 experiments elsewhere in this repo, see src/training/lora.py): same
@@ -9,15 +9,20 @@ pytree argument to `.apply()`, so "adapting" a Flax model means patching
 that pytree, not subclassing anything). See CLAUDE-CODING-SKILL.md for the
 fuller writeup of this pattern.
 
-v1 targets only the decoder's MlpBlock Dense kernels (two explicit,
-unambiguous `nn.Dense` calls per TransformerLayer -- see
-src.models.utils.MlpBlock). Flax's built-in `nn.MultiHeadAttention` bundles
-its own query/key/value/out Dense sublayers internally, and their exact
-parameter-path names need to be confirmed by inspecting a live params
-pytree before an attention target list can be added (documented fast-follow
--- see the plan's "Milestone 0").
+Targets the MlpBlock Dense kernels (two explicit, unambiguous `nn.Dense`
+calls per TransformerLayer -- see src.models.utils.MlpBlock) of whichever
+of LPN's two top-level submodules are requested: the decoder, the encoder,
+or both (see `LORA_CONDITION_TARGETS`). Both EncoderTransformer and
+DecoderTransformer build their stacks from the same `TransformerLayer`, so
+the same MlpBlock predicate applies to each. Everything outside the
+MlpBlocks -- embeddings, the decoder's context_embed, the encoder's
+latent_mu/latent_logvar heads, the logits heads -- stays frozen. Flax's
+built-in `nn.MultiHeadAttention` bundles its own query/key/value/out Dense
+sublayers internally, and their exact parameter-path names need to be
+confirmed by inspecting a live params pytree before an attention target
+list can be added (documented fast-follow -- see the plan's "Milestone 0").
 
-`find_decoder_mlp_kernel_paths` and `merge_lora` deliberately avoid any
+`find_mlp_kernel_paths` and `merge_lora` deliberately avoid any
 jax/flax import: they walk a plain nested dict and only ever use `@` and
 `+` on the leaves, which works identically for numpy or jax arrays. That's
 what makes them unit-testable with plain numpy in this repo's Docker CPU
@@ -27,27 +32,46 @@ src/lpn_exp/checkpoint.py, and the same code works unchanged.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 PathTuple = tuple[str, ...]
 
+# Each LoRA-ascent condition name (as listed in the exp4 config's
+# `conditions`) -> the top-level LPN submodules whose MLP kernels it adapts.
+LORA_CONDITION_TARGETS: dict[str, tuple[str, ...]] = {
+    "lora_ascent_decoder": ("decoder",),
+    "lora_ascent_encoder": ("encoder",),
+    "lora_ascent_encoder_decoder": ("encoder", "decoder"),
+}
 
-def find_decoder_mlp_kernel_paths(params: dict[str, Any]) -> list[PathTuple]:
-    """Every `kernel` leaf under a decoder `MlpBlock` submodule, found by
+
+def find_mlp_kernel_paths(params: dict[str, Any], modules: Sequence[str]) -> list[PathTuple]:
+    """Every `kernel` leaf under an `MlpBlock` submodule of the given
+    top-level LPN submodules (`"encoder"` and/or `"decoder"`), found by
     walking the params pytree rather than hardcoding Flax's auto-generated
     submodule names (e.g. `TransformerLayer_0`) -- those names come from
     instantiation order and shouldn't be guessed.
     """
+    unknown = set(modules) - set(params)
+    if unknown:
+        raise KeyError(f"No top-level params for {sorted(unknown)}; have {sorted(params)}")
     paths: list[PathTuple] = []
 
     def _walk(node: Any, path: PathTuple) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
                 _walk(value, path + (key,))
-        elif path and path[-1] == "kernel" and "decoder" in path and "MlpBlock_0" in path:
+        elif path[-1] == "kernel" and "MlpBlock_0" in path:
             paths.append(path)
 
-    _walk(params, ())
+    for module in modules:
+        before = len(paths)
+        _walk(params[module], (module,))
+        # An empty match would make that LoRA condition a silent no-op
+        # (identical to `mean`) rather than a visible failure.
+        if len(paths) == before:
+            raise ValueError(f"No MlpBlock kernels found under {module!r}")
     return paths
 
 
@@ -77,7 +101,7 @@ def init_lora_params(
 
     `b` is zero-initialized -- this repo's usual identity-at-init convention
     (see src/training/adapters.py's bottleneck adapter) -- so the adapted
-    decoder is exactly the frozen pretrained one before any test-time
+    model is exactly the frozen pretrained one before any test-time
     gradient-ascent steps have run.
     """
     import jax

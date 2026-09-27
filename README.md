@@ -122,12 +122,13 @@ is a separate pipeline (`src/lpn_exp/`, `scripts/run_exp4.py`,
 `src/config/exp4_lpn_pattern2d.yaml`) that doesn't go through
 `config/schema.py`'s `ExperimentConfig`, `models/registry.py`, or
 `training/common.py` — see `CLAUDE-CODING-SKILL.md` for why. It compares
-three test-time conditions on the same fixed set of generated tasks: `mean`
+five test-time conditions on the same fixed set of generated tasks: `mean`
 (no adaptation), `gradient_ascent` (the paper's own search over the 2D
-latent vector), and `lora_ascent` (ours — a per-task LoRA adapter fit on
-the decoder's MLP weights instead of the latent, via a functional
+latent vector), and three LoRA-ascent variants (ours — a per-task LoRA
+adapter fit on MLP weights instead of the latent, via a functional
 params-pytree patch rather than PEFT, since PEFT only wraps PyTorch
-modules). Colab-only, with its own bootstrap cell in
+modules): `lora_ascent_decoder` (decoder only), `lora_ascent_encoder`
+(encoder only), and `lora_ascent_encoder_decoder` (both together). Colab-only, with its own bootstrap cell in
 `notebooks/exp4_test_time_tuning.ipynb` (JAX/Flax/Optax + the `lpn` repo
 itself, not `docker/requirements/`). `scripts/sync_outputs.py` (pulling
 metrics back from Drive automatically) is still a stub, shared across every

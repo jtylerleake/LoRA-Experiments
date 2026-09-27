@@ -5,7 +5,8 @@ Pattern-2D isn't a downloadable dataset (see CLAUDE-CODING-SKILL.md) --
 IterableDataset`) generates it procedurally. We seed it once and draw a
 fixed number of tasks up front so every run (and every condition within a
 run) scores the exact same tasks -- comparing `mean` vs. `gradient_ascent`
-vs. `lora_ascent` only means something if they all see identical inputs.
+vs. the `lora_ascent_*` variants only means something if they all see
+identical inputs.
 
 Each task is `num_pairs` (input, output) grid pairs sharing one random
 pattern. We don't reserve a separate held-out query pair on top of that --
