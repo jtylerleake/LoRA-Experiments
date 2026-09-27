@@ -10,7 +10,7 @@ internals:
     `mode`. This is exactly "the leave-one-out demo-pair objective" every
     LoRA-ascent condition gradient-ascends -- called with only the LoRA
     `(a, b)` pytree as the differentiated argument, everything else
-    (including the pretrained weights) closed over as a constant. That
+    (including the pretrained weights) held fixed. That
     forward pass runs the encoder (pairs -> latents) *and* the decoder
     (latent + input -> output), so gradients reach LoRA factors in either
     submodule with no special-casing.
@@ -24,27 +24,52 @@ internals:
 
 Every pair in a task takes a turn as the held-out target (the rest as
 context), matching pattern2d_tasks.py's evaluation convention.
+
+Performance: each condition's whole per-task computation -- every
+leave-one-out round (`jax.vmap`ed, not a Python loop) and, for the LoRA
+conditions, every adaptation step (`jax.lax.scan`) -- is one `jax.jit`ed
+call. The `build_*_evaluator` factories compile it once per condition and
+reuse it for every task (every task has the same array shapes), so only the
+first task per condition pays the compile. Running this eagerly, op by op,
+left the GPU mostly idle waiting on Python dispatch for a model this small.
+Params are passed to the jitted function as arguments rather than closed
+over, so they aren't baked into the compiled program as constants.
+
+Random keys are derived exactly as the original sequential per-round loop
+did (see `_split_chain`), so these compiled evaluators reproduce that
+loop's results for the same input key.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 from lpn_exp.lora import find_mlp_kernel_paths, init_lora_params, merge_lora
 from lpn_exp.pattern2d_tasks import Pattern2DTask, task_to_arrays
 
-
-@dataclass
-class LeaveOneOutRound:
-    context_grids: Any
-    context_shapes: Any
-    query_input: Any
-    query_shape: Any
-    label_grid: Any
-    label_shape: Any
+# (task, key) -> (accuracy, pixel_correctness), each averaged over the task's
+# leave-one-out rounds.
+TaskEvaluator = Callable[[Pattern2DTask, Any], tuple[float, float]]
 
 
-def _score_predictions(pred_grids, pred_shapes, label_grids, label_shapes) -> tuple[float, float]:
+class LeaveOneOutRounds(NamedTuple):
+    """Every leave-one-out round of one task, stacked along a leading round
+    axis (one round per pair) so they can be `jax.vmap`ed over. A NamedTuple
+    so it's a jax pytree with no registration needed.
+    """
+
+    context_grids: Any  # (N, N-1, R, C, 2)
+    context_shapes: Any  # (N, N-1, 2, 2)
+    query_input: Any  # (N, R, C)
+    query_shape: Any  # (N, 2)
+    label_grid: Any  # (N, R, C)
+    label_shape: Any  # (N, 2)
+
+
+def _score_predictions(pred_grids, pred_shapes, label_grids, label_shapes):
+    """Returns (accuracy, pixel_correctness) as jax scalars, so it can run
+    inside a jitted function.
+    """
     import jax.numpy as jnp
 
     correct_shapes = jnp.all(pred_shapes == label_shapes, axis=-1)
@@ -56,33 +81,41 @@ def _score_predictions(pred_grids, pred_shapes, label_grids, label_shapes) -> tu
     num_pixels = label_shapes.prod(axis=-1)
     pixel_correctness = (pixels_equal.sum(axis=(-1, -2)) / num_pixels).mean()
     accuracy = (pixels_equal.sum(axis=(-1, -2)) == num_pixels).mean()
-    return float(accuracy), float(pixel_correctness)
+    return accuracy, pixel_correctness
 
 
-def _leave_one_out_rounds(grids, shapes) -> list[LeaveOneOutRound]:
+def _leave_one_out_rounds(grids, shapes) -> LeaveOneOutRounds:
     """One round per pair in a task, taking its turn as the held-out target
     -- see src/data_utils.py's `make_leave_one_out`.
     """
     from src.data_utils import make_leave_one_out
 
-    leave_one_out_grids = make_leave_one_out(grids, axis=-4)  # (N, N-1, R, C, 2)
-    leave_one_out_shapes = make_leave_one_out(shapes, axis=-3)  # (N, N-1, 2, 2)
-    return [
-        LeaveOneOutRound(
-            context_grids=leave_one_out_grids[i],
-            context_shapes=leave_one_out_shapes[i],
-            query_input=grids[i, ..., 0],
-            query_shape=shapes[i, :, 0],
-            label_grid=grids[i, ..., 1],
-            label_shape=shapes[i, :, 1],
-        )
-        for i in range(grids.shape[0])
-    ]
+    return LeaveOneOutRounds(
+        context_grids=make_leave_one_out(grids, axis=-4),
+        context_shapes=make_leave_one_out(shapes, axis=-3),
+        query_input=grids[..., 0],
+        query_shape=shapes[:, :, 0],
+        label_grid=grids[..., 1],
+        label_shape=shapes[:, :, 1],
+    )
 
 
-def _generate_and_score(
-    model, params, round_: LeaveOneOutRound, key, mode: str, mode_kwargs: dict
-) -> tuple[float, float]:
+def _split_chain(key, n: int):
+    """The `n` sub-keys a Python loop of `key, sub_key = jax.random.split(key)`
+    would produce, in order, as one stacked array -- via `lax.scan`, so it
+    traces to a small loop instead of `n` unrolled splits.
+    """
+    import jax
+
+    def step(key, _):
+        key, sub_key = jax.random.split(key)
+        return key, sub_key
+
+    _, sub_keys = jax.lax.scan(step, key, None, length=n)
+    return sub_keys
+
+
+def _generate_and_score(model, params, round_: LeaveOneOutRounds, key, mode: str, mode_kwargs: dict):
     """Decodes one round's held-out query via `LPN.generate_output` and scores it.
 
     `generate_output` expects a leading batch axis on every argument (the
@@ -109,37 +142,39 @@ def _generate_and_score(
     )
 
 
-def evaluate_condition_mean_or_gradient_ascent(
-    model,
-    params,
-    task: Pattern2DTask,
-    max_rows: int,
-    max_cols: int,
-    mode: str,
-    mode_kwargs: dict,
-    key,
-) -> tuple[float, float]:
+def _as_task_evaluator(jitted, params, max_rows: int, max_cols: int) -> TaskEvaluator:
+    def evaluate(task: Pattern2DTask, key) -> tuple[float, float]:
+        grids, shapes = task_to_arrays(task, max_rows, max_cols)
+        accuracy, pixel_correctness = jitted(params, grids, shapes, key)
+        return float(accuracy), float(pixel_correctness)
+
+    return evaluate
+
+
+def build_mean_or_gradient_ascent_evaluator(
+    model, params, max_rows: int, max_cols: int, mode: str, mode_kwargs: dict
+) -> TaskEvaluator:
     """Scores one of LPN's own inference modes ("mean" or "gradient_ascent")
-    against every pair of `task`, unmodified from the paper's own mechanism.
+    against every pair of a task, unmodified from the paper's own mechanism.
     """
     import jax
 
-    grids, shapes = task_to_arrays(task, max_rows, max_cols)
-    accuracies, pixel_corrects = [], []
-    for round_ in _leave_one_out_rounds(grids, shapes):
-        key, sub_key = jax.random.split(key)
-        accuracy, pixel_correctness = _generate_and_score(
-            model, params, round_, sub_key, mode, mode_kwargs
-        )
-        accuracies.append(accuracy)
-        pixel_corrects.append(pixel_correctness)
-    return sum(accuracies) / len(accuracies), sum(pixel_corrects) / len(pixel_corrects)
+    def evaluate(params, grids, shapes, key):
+        rounds = _leave_one_out_rounds(grids, shapes)
+        round_keys = _split_chain(key, grids.shape[0])
+        accuracies, pixel_corrects = jax.vmap(
+            lambda round_, round_key: _generate_and_score(
+                model, params, round_, round_key, mode, mode_kwargs
+            )
+        )(rounds, round_keys)
+        return accuracies.mean(), pixel_corrects.mean()
+
+    return _as_task_evaluator(jax.jit(evaluate), params, max_rows, max_cols)
 
 
-def evaluate_condition_lora_ascent(
+def build_lora_ascent_evaluator(
     model,
     frozen_params: dict[str, Any],
-    task: Pattern2DTask,
     max_rows: int,
     max_cols: int,
     target_modules: tuple[str, ...],
@@ -148,8 +183,7 @@ def evaluate_condition_lora_ascent(
     num_steps: int,
     lr: float,
     prior_kl_coeff: float,
-    key,
-) -> tuple[float, float]:
+) -> TaskEvaluator:
     """Our test-time adaptation conditions: for each held-out pair, fit a
     fresh per-round LoRA adapter on the MLP kernels of `target_modules`
     (`("decoder",)`, `("encoder",)`, or `("encoder", "decoder")` -- see
@@ -162,10 +196,9 @@ def evaluate_condition_lora_ascent(
     import optax
 
     target_paths = find_mlp_kernel_paths(frozen_params, target_modules)
-    grids, shapes = task_to_arrays(task, max_rows, max_cols)
-    accuracies, pixel_corrects = [], []
+    optimizer = optax.sgd(lr)
 
-    def loss_fn(lora_params, context_grids, context_shapes, rng):
+    def loss_fn(lora_params, frozen_params, context_grids, context_shapes, rng):
         patched = merge_lora(frozen_params, lora_params, scale)
         loss, _metrics = model.apply(
             {"params": patched},
@@ -179,31 +212,39 @@ def evaluate_condition_lora_ascent(
         )
         return loss
 
-    grad_fn = jax.value_and_grad(loss_fn)
+    grad_fn = jax.value_and_grad(loss_fn)  # w.r.t. lora_params only
 
-    for round_ in _leave_one_out_rounds(grids, shapes):
-        key, init_key = jax.random.split(key)
-        lora_params = init_lora_params(frozen_params, target_paths, rank, init_key)
-        optimizer = optax.sgd(lr)
-        opt_state = optimizer.init(lora_params)
+    def fit_and_score(frozen_params, round_: LeaveOneOutRounds, keys):
+        # keys: (num_steps + 2, ...) -- init, one per step, decode; the same
+        # order the original sequential loop split them in.
+        lora_params = init_lora_params(frozen_params, target_paths, rank, keys[0])
 
-        for _ in range(num_steps):
-            key, step_key = jax.random.split(key)
+        def step(carry, step_key):
+            lora_params, opt_state = carry
             # "Gradient ascent" on the paper's own likelihood objective is
             # gradient *descent* on this `loss` (cross-entropy + KL) -- same
             # numerical direction, just their terminology for maximizing
             # log-likelihood.
             _loss, grads = grad_fn(
-                lora_params, round_.context_grids, round_.context_shapes, step_key
+                lora_params, frozen_params, round_.context_grids, round_.context_shapes, step_key
             )
             updates, opt_state = optimizer.update(grads, opt_state)
-            lora_params = optax.apply_updates(lora_params, updates)
+            return (optax.apply_updates(lora_params, updates), opt_state), None
 
-        patched_params = merge_lora(frozen_params, lora_params, scale)
-        key, sub_key = jax.random.split(key)
-        accuracy, pixel_correctness = _generate_and_score(
-            model, patched_params, round_, sub_key, "mean", {}
+        (lora_params, _opt_state), _ = jax.lax.scan(
+            step, (lora_params, optimizer.init(lora_params)), keys[1:-1]
         )
-        accuracies.append(accuracy)
-        pixel_corrects.append(pixel_correctness)
-    return sum(accuracies) / len(accuracies), sum(pixel_corrects) / len(pixel_corrects)
+        patched_params = merge_lora(frozen_params, lora_params, scale)
+        return _generate_and_score(model, patched_params, round_, keys[-1], "mean", {})
+
+    def evaluate(frozen_params, grids, shapes, key):
+        num_rounds = grids.shape[0]
+        rounds = _leave_one_out_rounds(grids, shapes)
+        keys = _split_chain(key, num_rounds * (num_steps + 2))
+        round_keys = keys.reshape(num_rounds, num_steps + 2, *keys.shape[1:])
+        accuracies, pixel_corrects = jax.vmap(fit_and_score, in_axes=(None, 0, 0))(
+            frozen_params, rounds, round_keys
+        )
+        return accuracies.mean(), pixel_corrects.mean()
+
+    return _as_task_evaluator(jax.jit(evaluate), frozen_params, max_rows, max_cols)

@@ -37,12 +37,24 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="Path to an exp4 YAML config.")
     parser.add_argument("--output-root", default="outputs", help="Root dir for run artifacts.")
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        default=None,
+        help="Run only these conditions (a subset of the config's list), e.g. so each "
+        "condition can run in its own notebook cell. Defaults to every configured condition.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
     config = Exp4Config.from_yaml(args.config)
+    if args.conditions is not None:
+        unknown = [c for c in args.conditions if c not in config.conditions]
+        if unknown:
+            raise ValueError(f"--conditions {unknown} not in config's conditions {config.conditions}")
+        config = config.model_copy(update={"conditions": args.conditions})
 
     output_dir = Path(args.output_root) / config.output_subdir
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -63,8 +75,8 @@ def main(argv=None) -> int:
         from lpn_exp.lora import LORA_CONDITION_TARGETS
         from lpn_exp.pattern2d_tasks import generate_tasks
         from lpn_exp.test_time_adapt import (
-            evaluate_condition_lora_ascent,
-            evaluate_condition_mean_or_gradient_ascent,
+            build_lora_ascent_evaluator,
+            build_mean_or_gradient_ascent_evaluator,
         )
 
         model, frozen_params = load_pretrained(config.checkpoint_repo, config.checkpoint_name)
@@ -79,6 +91,40 @@ def main(argv=None) -> int:
             seed=config.seed,
         )
 
+        # Built once per condition, not per task: each wraps a jitted function
+        # that compiles on its first task and is reused for the rest (see
+        # src/lpn_exp/test_time_adapt.py). So each condition's first task's
+        # elapsed_seconds includes that one-time compile.
+        evaluators = {}
+        for condition in config.conditions:
+            if condition == "mean":
+                evaluators[condition] = build_mean_or_gradient_ascent_evaluator(
+                    model, frozen_params, max_rows, max_cols, mode="mean", mode_kwargs={}
+                )
+            elif condition == "gradient_ascent":
+                ga_kwargs = {
+                    "num_steps": config.gradient_ascent.num_steps,
+                    "lr": config.gradient_ascent.lr,
+                }
+                evaluators[condition] = build_mean_or_gradient_ascent_evaluator(
+                    model, frozen_params, max_rows, max_cols, mode="gradient_ascent", mode_kwargs=ga_kwargs
+                )
+            elif condition in LORA_CONDITION_TARGETS:
+                evaluators[condition] = build_lora_ascent_evaluator(
+                    model,
+                    frozen_params,
+                    max_rows,
+                    max_cols,
+                    target_modules=LORA_CONDITION_TARGETS[condition],
+                    rank=config.lora.rank,
+                    scale=config.lora.scale,
+                    num_steps=config.lora.num_steps,
+                    lr=config.lora.lr,
+                    prior_kl_coeff=0.001,  # matches the checkpoint's own training.kl_coeff
+                )
+            else:
+                raise ValueError(f"Unknown condition: {condition!r}")
+
         key = jax.random.PRNGKey(config.seed)
         overall = tqdm(
             total=len(tasks) * len(config.conditions),
@@ -91,49 +137,7 @@ def main(argv=None) -> int:
             for condition in config.conditions:
                 start = time.time()
                 key, sub_key = jax.random.split(key)
-                if condition == "mean":
-                    accuracy, pixel_correctness = evaluate_condition_mean_or_gradient_ascent(
-                        model,
-                        frozen_params,
-                        task,
-                        max_rows,
-                        max_cols,
-                        mode="mean",
-                        mode_kwargs={},
-                        key=sub_key,
-                    )
-                elif condition == "gradient_ascent":
-                    ga_kwargs = {
-                        "num_steps": config.gradient_ascent.num_steps,
-                        "lr": config.gradient_ascent.lr,
-                    }
-                    accuracy, pixel_correctness = evaluate_condition_mean_or_gradient_ascent(
-                        model,
-                        frozen_params,
-                        task,
-                        max_rows,
-                        max_cols,
-                        mode="gradient_ascent",
-                        mode_kwargs=ga_kwargs,
-                        key=sub_key,
-                    )
-                elif condition in LORA_CONDITION_TARGETS:
-                    accuracy, pixel_correctness = evaluate_condition_lora_ascent(
-                        model,
-                        frozen_params,
-                        task,
-                        max_rows,
-                        max_cols,
-                        target_modules=LORA_CONDITION_TARGETS[condition],
-                        rank=config.lora.rank,
-                        scale=config.lora.scale,
-                        num_steps=config.lora.num_steps,
-                        lr=config.lora.lr,
-                        prior_kl_coeff=0.001,  # matches the checkpoint's own training.kl_coeff
-                        key=sub_key,
-                    )
-                else:
-                    raise ValueError(f"Unknown condition: {condition!r}")
+                accuracy, pixel_correctness = evaluators[condition](task, sub_key)
 
                 elapsed = time.time() - start
                 write_metric(

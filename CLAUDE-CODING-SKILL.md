@@ -191,3 +191,19 @@ non-PyTorch model:
   install cell so a broken install shows up immediately instead of several
   cells later as a confusing `ModuleNotFoundError` deep inside the vendored
   repo's own code.
+- **Unjitted JAX on a small model is dispatch-bound, not compute-bound —
+  `jax.jit` the whole per-task computation, and build it once.** Calling
+  `model.apply` / `jax.value_and_grad` eagerly in Python loops (over
+  leave-one-out rounds and adaptation steps) left exp4's A100 mostly idle;
+  jitting each condition's whole per-task function (`vmap` over rounds,
+  `lax.scan` over steps) measured 40-230x faster per task on CPU after a
+  few seconds' one-time compile. Two things make or break that: construct
+  the jitted function **once per condition, outside the task loop** (a
+  fresh `jax.jit(closure)` per task recompiles every task and throws the
+  win away), and pass params as **arguments**, not closure constants. To
+  keep results comparable, derive random keys inside the jitted function
+  in the same order the old loop split them (`lax.scan` over
+  `jax.random.split`), then check equivalence with `jax.disable_jit()`:
+  it should match the old eager code exactly. The jitted version can still
+  differ on the odd task, because XLA's float reassociation can flip a
+  near-tie in the greedy decode. That's expected, not a bug.

@@ -362,6 +362,20 @@ def test_exp4_config_lists_all_three_lora_ascent_variants():
     assert config.conditions == ["mean", "gradient_ascent", *LORA_CONDITION_TARGETS]
 
 
+def test_exp4_mini_mirrors_full_structure_but_capped():
+    full = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml")
+    mini = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d_mini.yaml")
+    assert mini.conditions == full.conditions
+    assert mini.checkpoint_repo == full.checkpoint_repo
+    assert mini.checkpoint_name == full.checkpoint_name
+    assert mini.task_generator == full.task_generator
+    assert mini.lora.rank == full.lora.rank
+    assert mini.num_eval_tasks < full.num_eval_tasks
+    assert mini.gradient_ascent.num_steps <= full.gradient_ascent.num_steps
+    assert mini.lora.num_steps <= full.lora.num_steps
+    assert mini.output_subdir != full.output_subdir
+
+
 def test_exp4_config_rejects_unknown_condition():
     with pytest.raises(ValueError):
         Exp4Config(conditions=["mean", "lora_ascent"])
