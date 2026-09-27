@@ -184,13 +184,27 @@ non-PyTorch model:
   be satisfied, silently skipping every other package in it, including
   ones with no version problem of their own like `chex`). Same principle as
   `colab_bootstrap.ipynb` already applies to `torch`: don't force a pinned
-  `jax`/`jaxlib` over Colab's preinstalled, CUDA-matched build — strip just
-  those two lines from the requirements file (e.g. `grep -v -E
-  '^(jax|jaxlib)=='`) and install everything else pinned as normal. Add a
-  quick `import chex; import jax; jax.devices()` print right after the
-  install cell so a broken install shows up immediately instead of several
-  cells later as a confusing `ModuleNotFoundError` deep inside the vendored
-  repo's own code.
+  `jax`/`jaxlib` over Colab's preinstalled, CUDA-matched build.
+- **Don't install a vendored repo's `requirements.txt` on Colab at all.
+  List what the code you actually import needs, and install only what
+  Colab lacks.** Stripping just the jax lines wasn't enough. lpn's other
+  mid-2024 pins still *downgraded* Colab's packages:
+  - `huggingface_hub==0.24.6` broke Colab's `transformers`, `datasets` and
+    `peft`, which our entrypoints import at startup (`silence_library_noise`).
+  - `matplotlib==3.9.0` and `scikit-learn==1.5.1` had no wheels for
+    Colab's Python, so pip compiled them from source.
+
+  pip reports all this only as resolver "ERROR" lines, and the cell still
+  "succeeds". The fix:
+  - Grep the imports reachable from the modules you use. For exp4 that's
+    numpy, matplotlib, sklearn, seaborn, networkx, PIL, torch and
+    huggingface_hub, all preinstalled on Colab.
+  - Install only the rest (flax/optax/chex), pinned to the versions you
+    verified locally. Check their `jax>=` floor against Colab's jax.
+  - Pin the vendored repo's clone to a commit.
+  - End the install cell by importing everything the pipeline uses, your
+    own entrypoints included, so a broken install fails right there instead
+    of cells later.
 - **Unjitted JAX on a small model is dispatch-bound, not compute-bound —
   `jax.jit` the whole per-task computation, and build it once.** Calling
   `model.apply` / `jax.value_and_grad` eagerly in Python loops (over
