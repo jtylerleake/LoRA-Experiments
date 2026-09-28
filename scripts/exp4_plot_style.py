@@ -91,11 +91,21 @@ def use_aptos_display(font_dir: str | Path | None, required: bool = True) -> str
         "%LOCALAPPDATA%\\Microsoft\\FontCache\\4\\CloudFonts\\Aptos Display\\; they can also be "
         "downloaded from Microsoft."
     )
-    paths = sorted(Path(font_dir).glob("*.ttf")) if font_dir and Path(font_dir).is_dir() else []
+    folder = Path(font_dir) if font_dir else None
+    if folder is None or not folder.is_dir():
+        if not required:
+            return None
+        where = f"{str(font_dir)!r} (resolved to {folder.resolve()})" if folder else "(no --font-dir given)"
+        hint = ""
+        if folder and not folder.is_absolute() and str(font_dir).startswith("MyDrive"):
+            hint = " On Colab, Drive paths start with /content/drive/ -- e.g. /content/drive/MyDrive/..."
+        raise FileNotFoundError(f"Font folder not found: {where}.{hint} {help_text}")
+    paths = sorted(p for p in folder.iterdir() if p.suffix.lower() == ".ttf")
     display = [p for p in paths if _is_aptos_display(p)]
     if not display:
         if required:
-            raise FileNotFoundError(f"No Aptos Display fonts in {font_dir!r}. {help_text}")
+            found = ", ".join(p.name for p in paths) or "no .ttf files"
+            raise FileNotFoundError(f"No Aptos Display fonts in {folder} (found: {found}). {help_text}")
         return None
     for path in display:
         font_manager.fontManager.addfont(str(path))
