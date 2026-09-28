@@ -155,7 +155,11 @@ fit the pretrained checkpoint's 4x4, 10-color grids:
 
 Every round is well-posed: an exact solver recovers it from its context. The
 pattern levels are clean by construction. The notebook's section 7 pilots
-them with `mean` and `gradient_ascent` first. Colab-only, with its own
+them with `mean` and `gradient_ascent` first.
+Cell 7.6 (`scripts/plot_exp4_ladder.py`) writes the ladder's tables and
+figures to Drive, under `exp4_ladder_report/`. All exp4 figures use Aptos
+Display (`scripts/exp4_plot_style.py`). It's a Microsoft font, so the `.ttf`
+files are kept on Drive (`FONT_DIR` in the notebook), not in this repo. Colab-only, with its own
 bootstrap cell in
 `notebooks/exp4_test_time_tuning.ipynb` (JAX/Flax/Optax + the `lpn` repo
 itself, not `docker/requirements/`). `scripts/sync_outputs.py` (pulling

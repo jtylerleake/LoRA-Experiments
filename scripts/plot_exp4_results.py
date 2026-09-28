@@ -1,27 +1,24 @@
 """Generate experiment 4's results table and condition-comparison plot from
-a synced metrics.jsonl (see src/config/exp4_lpn_pattern2d.yaml).
+a synced metrics.jsonl (see src/config/exp4_lpn_pattern2d.yaml), for one
+config's output folder. (scripts/plot_exp4_ladder.py reports across the
+benchmark ladder's levels.)
 
-  results_table.csv / results_table.md — per condition, exact-match
-  accuracy and pixel correctness pooled over two sets of rounds: "All
-  rounds" (the paper's protocol) and "Clean-only rounds" (dropping rounds
-  whose held-out pair duplicates a context pair -- see
-  pattern2d_tasks.clean_round_mask), each with a 95% bootstrap CI that
-  resamples whole tasks (rounds within a task aren't independent). Also
-  printed.
+  results_table.{csv,md,png} — per condition, exact-match accuracy and pixel
+  correctness pooled over two sets of rounds: "All rounds" (the paper's
+  protocol) and "Clean-only rounds" (dropping rounds whose held-out pair
+  duplicates a context pair -- see pattern2d_tasks.clean_round_mask), each
+  with a 95% bootstrap CI that resamples whole tasks (rounds within a task
+  aren't independent). Also printed.
 
-  condition_comparison.png — mean accuracy and pixel-correctness (bars, with
-  95% CI whiskers across tasks) for each condition run: `mean` (no test-time
-  adaptation), `gradient_ascent` (the paper's own latent-vector search), and
-  the three LoRA-ascent variants (ours -- a per-task LoRA adapter on the
-  MLP weights of the decoder, the encoder, or both, see src/lpn_exp/). This
-  is the actual point of the experiment: does adapting the model's weights
-  per task beat searching its latent, which part of the model is worth
-  adapting, and does any of it beat doing nothing.
+  condition_comparison.{png,pdf} — clean-round accuracy and pixel
+  correctness per condition, with the same task-bootstrap CIs: `mean` (no
+  test-time adaptation), `gradient_ascent` (the paper's own latent-vector
+  search), and the three LoRA-ascent variants (ours -- a per-task LoRA
+  adapter on the MLP weights of the decoder, the encoder, or both, see
+  src/lpn_exp/).
 
-Colors follow the same validated palette as scripts/plot_results.py: `mean`
-(the no-adaptation baseline) gets the neutral/muted slot, the four
-adaptation conditions get categorical hues 1-4, consistent with how this
-repo already assigns categorical color by identity, not by value.
+Fonts, colors and labels come from exp4_plot_style.py (Aptos Display; pass
+the font folder as --font-dir).
 """
 from __future__ import annotations
 
@@ -32,61 +29,12 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 
-CONDITION_ORDER = [
-    "mean",
-    "gradient_ascent",
-    "lora_ascent_decoder",
-    "lora_ascent_encoder",
-    "lora_ascent_encoder_decoder",
-]
-CONDITION_LABELS = {
-    "mean": "mean\n(no adaptation)",
-    "gradient_ascent": "gradient ascent\n(latent search)",
-    "lora_ascent_decoder": "LoRA ascent\n(decoder)",
-    "lora_ascent_encoder": "LoRA ascent\n(encoder)",
-    "lora_ascent_encoder_decoder": "LoRA ascent\n(encoder + decoder)",
-}
-CONDITION_COLORS = {
-    "mean": "#898781",
-    "gradient_ascent": "#eb6834",
-    "lora_ascent_decoder": "#2a78d6",
-    "lora_ascent_encoder": "#1baf7a",
-    "lora_ascent_encoder_decoder": "#eda100",
-}
-
-SURFACE = "#fcfcfb"
-INK = "#0b0b0b"
-MUTED = "#898781"
-GRID = "#e1e0d9"
+import exp4_plot_style as style
+from exp4_plot_style import CONDITION_ORDER
 
 ROUND_COLUMNS = ["round_accuracy", "round_pixel_correctness", "round_is_clean"]
 SUBSETS = [("All rounds", False), ("Clean-only rounds", True)]
-
-
-def apply_theme() -> None:
-    sns.set_theme(
-        style="whitegrid",
-        context="notebook",
-        font_scale=1.05,
-        rc={
-            "figure.facecolor": SURFACE,
-            "axes.facecolor": SURFACE,
-            "savefig.facecolor": SURFACE,
-            "axes.edgecolor": MUTED,
-            "axes.labelcolor": INK,
-            "text.color": INK,
-            "xtick.color": MUTED,
-            "ytick.color": MUTED,
-            "grid.color": GRID,
-            "grid.linewidth": 1.0,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "legend.frameon": False,
-            "font.family": "sans-serif",
-        },
-    )
 
 
 def load_metrics(path: Path) -> pd.DataFrame:
@@ -169,61 +117,62 @@ def build_results_table(df: pd.DataFrame, num_resamples: int = 2000, seed: int =
     return pd.DataFrame(table)
 
 
-def results_table_markdown(table: pd.DataFrame) -> str:
+def _table_rows(table: pd.DataFrame) -> tuple[list[str], list[list[str]]]:
     def fmt(row, name):
-        return f"{row[name]:.3f} [{row[name + '_ci_low']:.3f}, {row[name + '_ci_high']:.3f}]"
+        return f"{100 * row[name]:.1f} [{100 * row[name + '_ci_low']:.1f}, {100 * row[name + '_ci_high']:.1f}]"
 
-    lines = [
-        "| Condition | Rounds | Accuracy [95% CI] | Pixel correctness [95% CI] | # rounds | # tasks |",
-        "|---|---|---|---|---|---|",
+    header = ["Condition", "Rounds", "Accuracy (%)", "Pixel correctness (%)", "Rounds (n)", "Tasks (n)"]
+    rows = [
+        [style.CONDITION_LABELS.get(r["condition"], r["condition"]), r["rounds"].replace("-only", ""),
+         fmt(r, "accuracy"), fmt(r, "pixel_correctness"), str(r["num_rounds"]), str(r["num_tasks"])]
+        for _, r in table.iterrows()
     ]
-    for _, row in table.iterrows():
-        lines.append(
-            f"| {row['condition']} | {row['rounds']} | {fmt(row, 'accuracy')} | "
-            f"{fmt(row, 'pixel_correctness')} | {row['num_rounds']} | {row['num_tasks']} |"
-        )
+    for i in range(len(rows) - 1, 0, -1):  # condition name only on its first row
+        if rows[i][0] == rows[i - 1][0]:
+            rows[i][0] = ""
+    return header, rows
+
+
+def results_table_markdown(table: pd.DataFrame) -> str:
+    header, rows = _table_rows(table)
+    lines = [" | ".join(header).join(["| ", " |"]), "|:---|:---|---:|---:|---:|---:|"]
+    lines += [" | ".join(r).join(["| ", " |"]) for r in rows]
     return "\n".join(lines) + "\n"
 
 
-def plot_condition_comparison(df: pd.DataFrame, out_path: Path) -> None:
-    present = [c for c in CONDITION_ORDER if c in df["condition"].unique()]
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
-
-    metrics_and_titles = [
-        ("accuracy", "Exact-match accuracy"),
-        ("pixel_correctness", "Pixel correctness"),
-    ]
-    for ax, (metric, title) in zip(axes, metrics_and_titles):
-        sns.barplot(
-            data=df,
-            x="condition",
-            y=metric,
-            order=present,
-            hue="condition",
-            hue_order=present,
-            palette=CONDITION_COLORS,
-            legend=False,
-            errorbar=("ci", 95),
-            ax=ax,
-        )
-        ax.set_title(title, color=INK, fontweight="bold")
-        ax.set_xlabel("")
-        ax.set_ylabel(metric.replace("_", " "))
-        ax.set_xticks(range(len(present)))
-        ax.set_xticklabels([CONDITION_LABELS.get(c, c) for c in present])
-        ax.set_ylim(0, 1)
-        sns.despine(ax=ax)
-
-    fig.suptitle("Experiment 4: test-time adaptation on Pattern-2D", color=INK, fontweight="bold")
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+def plot_condition_comparison(table: pd.DataFrame, out_dir: Path) -> None:
+    """Clean-round accuracy and pixel correctness per condition, as columns
+    with task-bootstrap 95% CI whiskers.
+    """
+    clean = table[table["rounds"] == "Clean-only rounds"].set_index("condition")
+    present = [c for c in CONDITION_ORDER if c in clean.index]
+    x = np.arange(len(present))
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 5.2))
+    for ax, (metric, panel_title) in zip(axes, [("accuracy", "Exact-match accuracy"),
+                                                ("pixel_correctness", "Pixel correctness")]):
+        values = clean.loc[present, metric].to_numpy(dtype=float)
+        err = np.vstack([values - clean.loc[present, f"{metric}_ci_low"],
+                         clean.loc[present, f"{metric}_ci_high"] - values])
+        ax.bar(x, values, width=0.36, color=[style.CONDITION_COLORS[c] for c in present], zorder=2)
+        ax.errorbar(x, values, yerr=err, fmt="none", ecolor=style.INK_SECONDARY, elinewidth=1.2, capsize=0, zorder=3)
+        ax.set_title(panel_title)
+        ax.set_xticks(x, [style.CONDITION_LABELS[c].replace(" (", "\n(") for c in present])
+        ax.set_ylim(0, 1.04)
+        style.percent_axis(ax)
+    height = fig.get_figheight()
+    fig.text(0.0, 1 - 0.05 / height, "Test-time adaptation results", fontsize=14, fontweight="bold",
+             color=style.INK, va="top")
+    fig.text(0.0, 1 - 0.39 / height, "Clean held-out pairs, pooled over rounds. Whiskers: 95% bootstrap CI over tasks.",
+             fontsize=10, color=style.INK_SECONDARY, va="top")
+    fig.subplots_adjust(top=1 - 1.15 / height, wspace=0.15)
+    style.save_figure(fig, out_dir, "condition_comparison")
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metrics", default="outputs/exp4_lpn_pattern2d/metrics.jsonl")
     parser.add_argument("--output-dir", default="outputs/exp4_lpn_pattern2d/plots")
+    parser.add_argument("--font-dir", required=True, help="Folder with the Aptos Display .ttf files.")
     return parser.parse_args(argv)
 
 
@@ -236,7 +185,7 @@ def main(argv=None) -> int:
             "(notebooks/exp4_test_time_tuning.ipynb) first."
         )
 
-    apply_theme()
+    style.setup(args.font_dir)
     df = load_metrics(metrics_path)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -246,8 +195,14 @@ def main(argv=None) -> int:
     markdown = results_table_markdown(table)
     (out_dir / "results_table.md").write_text(markdown, encoding="utf-8")
     print(markdown)
+    header, rows = _table_rows(table)
+    fig = style.render_table_figure(rows, header, "Test-time adaptation results",
+                                    "Brackets give 95% bootstrap CIs over tasks. Clean rounds exclude held-out pairs "
+                                    "that duplicate a context pair.", [False, False, True, True, True, True])
+    fig.savefig(out_dir / "results_table.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
 
-    plot_condition_comparison(df, out_dir / "condition_comparison.png")
+    plot_condition_comparison(table, out_dir)
 
     print(f"Wrote plots to {out_dir}")
     return 0

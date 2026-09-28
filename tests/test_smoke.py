@@ -728,6 +728,120 @@ def test_plot_exp4_load_metrics_reports_only_each_conditions_latest_settings(tmp
     assert sorted(df[df["condition"] == "mean"]["task_id"]) == [0, 1]
 
 
+def test_exp4_plot_style_refuses_to_fall_back_from_aptos_display(tmp_path):
+    import matplotlib
+    import exp4_plot_style as style
+
+    with pytest.raises(FileNotFoundError, match="Aptos Display"):
+        style.use_aptos_display(tmp_path)  # empty folder
+    # A real font that isn't Aptos Display doesn't count either.
+    dejavu = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSans.ttf"
+    (tmp_path / "DejaVuSans.ttf").write_bytes(dejavu.read_bytes())
+    with pytest.raises(FileNotFoundError):
+        style.use_aptos_display(tmp_path)
+    assert style.use_aptos_display(tmp_path, required=False) is None
+
+
+def test_exp4_plot_style_colors_cover_every_condition():
+    import exp4_plot_style as style
+
+    assert set(style.CONDITION_COLORS) == set(style.CONDITION_LABELS) == set(style.CONDITION_ORDER)
+    assert len(set(style.CONDITION_COLORS.values())) == len(style.CONDITION_COLORS)
+    assert [code for code, _, _ in style.LEVELS] == ["L0", "L1", "L2", "L3", "L4"]
+    ladder_subdirs = {Exp4Config.from_yaml(p).output_subdir for p in LADDER_CONFIGS}
+    assert ladder_subdirs | {"exp4_lpn_pattern2d"} == {subdir for _, subdir, _ in style.LEVELS}
+
+
+def _write_ladder_level(root, subdir, conditions, num_tasks=6, steps=4):
+    """Fake metrics rows shaped like run_exp4's (adaptation conditions carry
+    trajectories); every round clean except round 3 of even tasks.
+    """
+    rng = np.random.default_rng(0)
+    for condition in conditions:
+        for task_id in range(num_tasks):
+            clean = [True, True, True, task_id % 2 == 1]
+            row = {"task_id": task_id, "condition": condition, "round_is_clean": clean,
+                   "fingerprint": condition, "num_adapted_params": 0 if condition == "mean" else 2}
+            if condition == "mean":
+                accuracy = [float(rng.random() < 0.3) for _ in range(4)]
+            else:
+                curves = [[0.0] + [float(step >= 2) for step in range(1, steps + 1)] for _ in range(4)]
+                accuracy = [c[-1] for c in curves]
+                row |= {"traj_accuracy": curves, "traj_pixel_correctness": curves,
+                        "traj_context_log_prob": [[-5.0 + s for s in range(steps + 1)] for _ in range(4)],
+                        "best_step": [steps] * 4}
+            row |= {"round_accuracy": accuracy, "round_pixel_correctness": accuracy}
+            write_metric(root / subdir / "metrics.jsonl", row)
+
+
+def test_exp4_ladder_report_tables(tmp_path):
+    import plot_exp4_ladder as ladder
+
+    _write_ladder_level(tmp_path, "exp4_lpn_pattern2d", ["mean", "gradient_ascent", "lora_ascent_decoder"])
+    _write_ladder_level(tmp_path, "exp4_ladder_L2_pattern3x3", ["mean", "gradient_ascent"])
+    levels = ladder.load_levels(tmp_path)
+    assert list(levels) == ["L0", "L2"]  # levels without results are skipped
+
+    accuracy = ladder.accuracy_table(levels)
+    assert list(accuracy["level"]) == ["L0", "L0", "L0", "L2", "L2"]
+    ga = accuracy[(accuracy["level"] == "L0") & (accuracy["condition"] == "gradient_ascent")].iloc[0]
+    assert ga["all_accuracy"] == pytest.approx(1.0) and ga["all_rounds"] == 24 and ga["clean_rounds"] == 21
+
+    speed = ladder.adaptation_speed_table(levels)
+    assert set(speed["condition"]) == {"gradient_ascent", "lora_ascent_decoder"}  # mean has no trajectory
+    row = speed.iloc[0]
+    assert row["accuracy_step_0"] == 0.0 and row["accuracy_step_1"] == 0.0
+    assert row["accuracy_step_2"] == 1.0 and row["accuracy_final"] == 1.0 and row["mean_best_step"] == 4
+
+    out = tmp_path / "tables"
+    ladder.write_accuracy_table(accuracy, out)
+    for suffix in ["csv", "md", "tex", "png"]:
+        assert (out / f"ladder_accuracy.{suffix}").exists()
+    tex = (out / "ladder_accuracy.tex").read_text(encoding="utf-8")
+    assert r"2$\times$2 patterns" in tex and r"(\%)" in tex and r"\toprule" in tex
+    md_rows = [line for line in (out / "ladder_accuracy.md").read_text(encoding="utf-8").splitlines()
+               if line.startswith(("| L0 ", "| L2 ", "|  |"))]
+    assert md_rows[0].startswith("| L0 |") and md_rows[1].startswith("|  |")  # level shown once per group
+
+
+def test_exp4_ladder_pooled_curve_resamples_whole_tasks():
+    import plot_exp4_ladder as ladder
+
+    long = pd.DataFrame({"task_id": [0, 0, 1, 1], "round": [0, 1, 0, 0], "step": [0, 0, 0, 1],
+                         "value": [1.0, 0.0, 1.0, 1.0]})
+    curve = ladder.pooled_curve(long, np.random.default_rng(0), num_resamples=200)
+    assert list(curve["step"]) == [0, 1]
+    assert curve.loc[0, "mean"] == pytest.approx(2 / 3)  # pooled over 3 rounds at step 0
+    assert (curve["low"] <= curve["mean"]).all() and (curve["mean"] <= curve["high"]).all()
+
+
+def test_exp4_ladder_report_figures_render(tmp_path):
+    import exp4_plot_style as style
+    import plot_exp4_ladder as ladder
+
+    style.setup(None, required=False)  # no Aptos in the test image; layout only
+    _write_ladder_level(tmp_path, "exp4_lpn_pattern2d", ["mean", "gradient_ascent", "lora_ascent_decoder"])
+    _write_ladder_level(tmp_path, "exp4_ladder_L4_color_permutation", ["mean", "gradient_ascent"])
+    levels = ladder.load_levels(tmp_path)
+    figures = tmp_path / "figures"
+    for metric in ["accuracy", "pixel_correctness"]:
+        ladder.plot_ladder_metric(ladder.accuracy_table(levels), metric, figures)
+    for kind in ["accuracy", "objective"]:
+        ladder.plot_curves(levels, kind, figures)
+    for stem in ["ladder_accuracy", "ladder_pixel_correctness", "ladder_adaptation_curves", "ladder_objective_curves"]:
+        assert (figures / f"{stem}.png").stat().st_size > 0 and (figures / f"{stem}.pdf").stat().st_size > 0
+
+
+def test_plot_exp4_scripts_require_a_font_dir(tmp_path):
+    for script in ["plot_exp4_results.py", "plot_exp4_ladder.py"]:
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / script), "--output-root", str(tmp_path),
+             "--metrics", str(tmp_path / "m.jsonl")],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0 and "--font-dir" in result.stderr
+
+
 def test_notebooks_have_no_literal_backslash_n():
     """A literal backslash-n (instead of a real line break) in a cell breaks
     `!` shell line continuations: the shell passes a stray `n` argument.
