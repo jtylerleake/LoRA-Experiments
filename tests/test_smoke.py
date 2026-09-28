@@ -728,6 +728,16 @@ def test_plot_exp4_load_metrics_reports_only_each_conditions_latest_settings(tmp
     assert sorted(df[df["condition"] == "mean"]["task_id"]) == [0, 1]
 
 
+def test_notebooks_have_no_literal_backslash_n():
+    """A literal backslash-n (instead of a real line break) in a cell breaks
+    `!` shell line continuations: the shell passes a stray `n` argument.
+    """
+    for path in (REPO_ROOT / "notebooks").glob("*.ipynb"):
+        for i, cell in enumerate(json.loads(path.read_text(encoding="utf-8"))["cells"]):
+            source = cell["source"] if isinstance(cell["source"], str) else "".join(cell["source"])
+            assert "\\n" not in source, f"{path.name} cell {i} has a literal backslash-n"
+
+
 def test_extract_final_answer_parses_gsm8k_format():
     text = "First we add 2 and 2 to get 4.\n#### 4"
     assert extract_final_answer(text) == "4"
