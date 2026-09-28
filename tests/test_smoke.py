@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 from transformers import TrainerCallback
@@ -27,11 +28,12 @@ from eval.metrics import (
     task_accuracy,
     write_metric,
 )
-from lpn_exp.config import ADAPTATION_CONDITIONS, Exp4Config
+from lpn_exp.config import ADAPTATION_CONDITIONS, Exp4Config, TaskGeneratorConfig
 from lpn_exp.lora import LORA_CONDITION_TARGETS, find_mlp_kernel_paths, merge_lora
 from lpn_exp.lr_sweep import select_best_learning_rates
 from lpn_exp.pattern2d_tasks import Pattern2DTask, clean_round_mask
-from lpn_exp.resume import read_jsonl_rows, run_fingerprint
+from lpn_exp.resume import SWEEP_ALGORITHM_VERSION, read_jsonl_rows, run_fingerprint
+from lpn_exp.task_families import all_rounds_solvable, make_tasks, solve_round
 from models.registry import get_model_spec
 from training.adapters import build_adapter_model
 from training.common import (
@@ -503,6 +505,133 @@ def test_read_jsonl_rows_rejects_a_malformed_middle_line(tmp_path):
         read_jsonl_rows(path)
 
 
+LADDER_CONFIGS = sorted(p for p in CONFIG_DIR.glob("exp4_ladder_L*.yaml") if not p.stem.endswith("_mini"))
+
+
+def test_exp4_ladder_has_every_planned_level():
+    families = {p.stem: Exp4Config.from_yaml(p).task_generator for p in LADDER_CONFIGS}
+    assert [p.stem.split("_")[2] for p in LADDER_CONFIGS] == ["L1", "L2", "L3", "L4"]
+    assert families["exp4_ladder_L1_sparse2x2"].pattern_density < 1.0
+    assert families["exp4_ladder_L2_pattern3x3"].pattern_size == 3
+    assert families["exp4_ladder_L3_pattern3x3_corner"].anchor == "random_corner"
+    assert families["exp4_ladder_L4_color_permutation"].family == "color_permutation"
+
+
+@pytest.mark.parametrize("config_path", LADDER_CONFIGS, ids=lambda p: p.stem)
+def test_exp4_ladder_level_matches_l0_except_its_tasks(config_path):
+    """Only the tasks may differ from L0, so the levels stay comparable."""
+    ignored = {"experiment", "description", "output_subdir", "task_generator"}
+    level = Exp4Config.from_yaml(config_path).model_dump(exclude=ignored)
+    l0 = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml").model_dump(exclude=ignored)
+    assert level == l0
+
+
+@pytest.mark.parametrize("config_path", LADDER_CONFIGS, ids=lambda p: p.stem)
+def test_exp4_ladder_tasks_are_well_posed_and_clean(config_path):
+    task_generator = Exp4Config.from_yaml(config_path).task_generator
+    tasks = make_tasks(task_generator, 64, seed=42)
+    assert [t.task_id for t in tasks] == list(range(64))
+    for task in tasks:
+        assert len(task.pairs) == task_generator.num_pairs
+        for pair in task.pairs:
+            assert pair["input"].shape == pair["output"].shape == (4, 4)
+            assert pair["output"].min() >= 0 and pair["output"].max() <= 9
+        # The exact solver recovers every held-out output from its context alone.
+        assert all_rounds_solvable(task_generator, task.pairs)
+        if task_generator.family == "pattern":
+            assert clean_round_mask(task) == [True] * task_generator.num_pairs
+
+
+def test_exp4_ladder_task_k_depends_only_on_seed_and_k():
+    task_generator = TaskGeneratorConfig(family="pattern", pattern_size=3)
+    few, many = make_tasks(task_generator, 3, seed=7), make_tasks(task_generator, 40, seed=7)
+    for a, b in zip(few, many):
+        assert all(np.array_equal(p["output"], q["output"]) for p, q in zip(a.pairs, b.pairs))
+    other_seed = make_tasks(task_generator, 3, seed=8)
+    assert any(
+        not np.array_equal(p["output"], q["output"]) for p, q in zip(few[0].pairs, other_seed[0].pairs)
+    )
+
+
+def test_exp4_pattern_family_respects_its_settings():
+    full = make_tasks(TaskGeneratorConfig(family="pattern", pattern_size=3), 32, seed=0)
+    for task in full:
+        for pair in task.pairs:
+            assert (pair["input"] != 0).sum() == 1 and pair["input"].max() == 1  # one marker pixel
+            assert (pair["output"] != 0).sum() == 9  # density 1.0: a full 3x3 pattern
+    sparse = make_tasks(TaskGeneratorConfig(family="pattern", pattern_size=2, pattern_density=0.5), 64, seed=0)
+    filled = [(t.pairs[0]["output"] != 0).sum() for t in sparse]
+    assert min(filled) >= 1 and max(filled) <= 4 and any(n < 4 for n in filled)
+    # random_corner: the marker sits at different corners of the pattern across tasks.
+    corner = TaskGeneratorConfig(family="pattern", pattern_size=3, anchor="random_corner")
+    offsets = set()
+    for task in make_tasks(corner, 64, seed=0):
+        marker = tuple(np.argwhere(task.pairs[0]["input"])[0])
+        top_left = tuple(np.argwhere(task.pairs[0]["output"]).min(axis=0))
+        offsets.add((marker[0] - top_left[0], marker[1] - top_left[1]))
+    assert offsets == {(0, 0), (0, 2), (2, 0), (2, 2)}
+
+
+def test_exp4_color_permutation_family_respects_its_settings():
+    task_generator = TaskGeneratorConfig(family="color_permutation", num_colors=4)
+    for task in make_tasks(task_generator, 32, seed=0):
+        colors = set(np.unique(np.concatenate([p["input"].ravel() for p in task.pairs])))
+        assert len(colors) <= 4 and 0 not in colors
+        # One consistent recoloring across all pairs.
+        mapping = {}
+        for pair in task.pairs:
+            for c_in, c_out in zip(pair["input"].ravel(), pair["output"].ravel()):
+                assert mapping.setdefault(c_in, c_out) == c_out
+
+
+def test_exp4_solver_refuses_rounds_the_context_does_not_determine():
+    task_generator = TaskGeneratorConfig(family="color_permutation", num_colors=4)
+    context = [{"input": np.full((4, 4), 1), "output": np.full((4, 4), 5)}]
+    assert solve_round(task_generator, context, np.full((4, 4), 2)) is None  # color 2 never shown
+    assert (solve_round(task_generator, context, np.full((4, 4), 1)) == 5).all()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"num_rows": 5, "num_cols": 5},  # bigger than the checkpoint's 4x4
+        {"family": "pattern", "pattern_size": 3, "num_pairs": 5},  # only 4 positions for 3x3
+        {"family": "pattern", "pattern_size": 4},  # doesn't fit with a marker
+        {"family": "lpn_pattern", "pattern_density": 0.5},  # lpn's generator has no sparse mode here
+        {"family": "color_permutation", "num_colors": 10},
+        {"num_pairs": 1},
+    ],
+)
+def test_exp4_task_generator_rejects_unsupported_settings(bad):
+    with pytest.raises(ValueError):
+        TaskGeneratorConfig(**bad)
+
+
+def test_exp4_l0_fingerprints_unchanged_by_the_ladder():
+    """Pinned to the values already on Drive: the ladder's new generator
+    settings must not change L0's fingerprints, or resume would redo (and
+    the results table would ignore) completed L0 work.
+    """
+    config = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml")
+    assert run_fingerprint(config, "mean", config.seed, None) == "fb620b635eb239ba"
+    sweep = {
+        "gradient_ascent": "62f79ec3ae4109cf",
+        "lora_ascent_decoder": "4151c737c3803283",
+        "lora_ascent_encoder": "2084e4044ece8c7a",
+        "lora_ascent_encoder_decoder": "a4781bc0d5b7bee1",
+    }
+    for condition, expected in sweep.items():
+        assert run_fingerprint(config, condition, config.lr_sweep.seed, 0.1, version=SWEEP_ALGORITHM_VERSION) == expected
+
+
+def test_exp4_ladder_levels_have_distinct_fingerprints():
+    fingerprints = {
+        run_fingerprint(Exp4Config.from_yaml(p), "gradient_ascent", 42, 0.1)
+        for p in [CONFIG_DIR / "exp4_lpn_pattern2d.yaml", *LADDER_CONFIGS]
+    }
+    assert len(fingerprints) == 1 + len(LADDER_CONFIGS)
+
+
 def test_run_fingerprint_tracks_what_changes_a_result():
     config = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml")
     base = run_fingerprint(config, "lora_ascent_decoder", config.seed, 0.1)
@@ -518,7 +647,7 @@ def test_run_fingerprint_tracks_what_changes_a_result():
     assert run_fingerprint(config, "mean", config.seed, None) == run_fingerprint(config, "mean", config.seed, 0.5)
 
 
-def _write_exp4_rows(path, config, condition, seed, lr, task_ids, **extra):
+def _write_exp4_rows(path, config, condition, seed, lr, task_ids, version=None, **extra):
     for task_id in task_ids:
         write_metric(
             path,
@@ -529,7 +658,7 @@ def _write_exp4_rows(path, config, condition, seed, lr, task_ids, **extra):
                 "round_accuracy": [1.0, 1.0, 0.0, 1.0],
                 "round_pixel_correctness": [1.0, 1.0, 0.5, 1.0],
                 "round_is_clean": [True, True, True, False],
-                "fingerprint": run_fingerprint(config, condition, seed, lr),
+                "fingerprint": run_fingerprint(config, condition, seed, lr, **({"version": version} if version else {})),
                 **extra,
             },
         )
@@ -555,6 +684,16 @@ def test_run_exp4_resume_skips_every_completed_run(tmp_path, caplog):
     assert metrics.read_text(encoding="utf-8") == before
 
 
+def test_run_exp4_num_steps_for_each_condition():
+    from run_exp4 import num_steps_for
+
+    config = Exp4Config.from_yaml(CONFIG_DIR / "exp4_lpn_pattern2d.yaml")
+    assert num_steps_for("mean", config) == 0
+    assert num_steps_for("gradient_ascent", config) == config.gradient_ascent.num_steps
+    for condition in LORA_CONDITION_TARGETS:
+        assert num_steps_for(condition, config) == config.lora.num_steps
+
+
 def test_tune_exp4_lr_resume_resummarizes_a_finished_sweep(tmp_path):
     from tune_exp4_lr import main as tune_main
 
@@ -563,9 +702,10 @@ def test_tune_exp4_lr_resume_resummarizes_a_finished_sweep(tmp_path):
     rows = tmp_path / f"{config.output_subdir}_lr_sweep" / "lr_sweep.jsonl"
     for condition in ADAPTATION_CONDITIONS:
         for lr in config.lr_sweep.learning_rates:
-            _write_exp4_rows(rows, config, condition, config.lr_sweep.seed, lr, range(config.lr_sweep.num_tasks))
+            _write_exp4_rows(rows, config, condition, config.lr_sweep.seed, lr, range(config.lr_sweep.num_tasks),
+                             version=SWEEP_ALGORITHM_VERSION)
     # A stale row from other settings must be ignored, not mixed in.
-    _write_exp4_rows(rows, config, "gradient_ascent", config.lr_sweep.seed, 99.0, [0])
+    _write_exp4_rows(rows, config, "gradient_ascent", config.lr_sweep.seed, 99.0, [0], version=SWEEP_ALGORITHM_VERSION)
     assert tune_main(["--config", str(config_path), "--output-root", str(tmp_path)]) == 0
     best = json.loads((rows.parent / "best_learning_rates.json").read_text(encoding="utf-8"))
     # Every lr scored identically, so ties go to the smallest.

@@ -8,7 +8,8 @@ the same notebook cell after a reconnect picks up where it left off.
 A run's fingerprint hashes everything that determines its result: the
 checkpoint, which tasks (generator settings + seed), the condition, and that
 condition's own hyperparameters (steps, learning rate, LoRA rank/scale), plus
-ALGORITHM_VERSION. Changing any of them changes the fingerprint, so those
+an algorithm version (ALGORITHM_VERSION for run rows, SWEEP_ALGORITHM_VERSION
+for sweep rows). Changing any of them changes the fingerprint, so those
 runs are redone rather than silently reused. Batch size is deliberately left
 out -- it changes how runs are grouped, not what each one computes.
 
@@ -25,9 +26,15 @@ from pathlib import Path
 from typing import Any
 
 # Bump when a change to the adaptation/scoring code changes what a run
-# computes, so rows from the old code are never reused.
+# computes (or what a row must contain), so rows from the old code are never
+# reused.
 # 2: GA-matched LoRA objective, clipping, best-step selection, per-round results.
-ALGORITHM_VERSION = 2
+# 3: run rows carry optimization trajectories (older rows would leave gaps in the curves).
+ALGORITHM_VERSION = 3
+# The sweep's own version: sweep rows don't carry trajectories, so the change
+# that made runs version 3 left them exactly as they were, and a finished
+# sweep stays valid.
+SWEEP_ALGORITHM_VERSION = 2
 
 
 def read_jsonl_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -57,15 +64,18 @@ def read_jsonl_rows(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
-def run_fingerprint(config, condition: str, seed: int, learning_rate: float | None) -> str:
+def run_fingerprint(
+    config, condition: str, seed: int, learning_rate: float | None, version: int = ALGORITHM_VERSION
+) -> str:
     """Short hash of everything that determines one (condition, task) run's
     result -- see the module docstring. `config` is an Exp4Config; `seed` is
-    the task seed (the eval `seed`, or `lr_sweep.seed` for sweep rows).
+    the task seed (the eval `seed`, or `lr_sweep.seed` for sweep rows, which
+    pass version=SWEEP_ALGORITHM_VERSION).
     """
     settings: dict[str, Any] = {
-        "algorithm_version": ALGORITHM_VERSION,
+        "algorithm_version": version,
         "checkpoint": [config.checkpoint_repo, config.checkpoint_name],
-        "task_generator": config.task_generator.model_dump(),
+        "task_generator": config.task_generator.fingerprint_fields(),
         "seed": seed,
         "condition": condition,
     }

@@ -8,7 +8,13 @@ the same fixed, seeded set of tasks.
 Each metrics.jsonl row is one (task, condition): its per-round results
 (`round_accuracy`, `round_pixel_correctness`), which rounds are clean
 (`round_is_clean` -- see pattern2d_tasks.clean_round_mask), their all-round
-means (`accuracy`, `pixel_correctness`), and the learning rate used.
+means (`accuracy`, `pixel_correctness`), the learning rate, step count and
+number of adapted parameters (`num_adapted_params`). Adaptation conditions
+also store their optimization trajectories, per round over steps
+0..num_steps: `traj_context_log_prob` (the shared objective),
+`traj_accuracy` / `traj_pixel_correctness` (the query score of the best
+candidate so far), and `best_step` -- see src/lpn_exp/test_time_adapt.py.
+Step 0 of every trajectory is the unadapted model, i.e. `mean`.
 Learning rates come from the config, or from scripts/tune_exp4_lr.py's
 `best_learning_rates.json` via --learning-rates.
 
@@ -53,6 +59,15 @@ from utils.logging_utils import get_logger, quiet_console, silence_library_noise
 silence_library_noise()
 
 log = get_logger(__name__)
+
+
+def num_steps_for(condition: str, config: Exp4Config) -> int:
+    """Adaptation steps a condition runs (0 for `mean`)."""
+    if condition == "mean":
+        return 0
+    if condition == "gradient_ascent":
+        return config.gradient_ascent.num_steps
+    return config.lora.num_steps
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -120,20 +135,14 @@ def main(argv=None) -> int:
         from tqdm.auto import tqdm
 
         from lpn_exp.checkpoint import load_pretrained
-        from lpn_exp.pattern2d_tasks import clean_round_mask, generate_tasks
-        from lpn_exp.test_time_adapt import build_condition_evaluator
+        from lpn_exp.pattern2d_tasks import clean_round_mask
+        from lpn_exp.task_families import make_tasks
+        from lpn_exp.test_time_adapt import build_condition_evaluator, num_adapted_params
 
         model, frozen_params = load_pretrained(config.checkpoint_repo, config.checkpoint_name)
         max_rows, max_cols = model.decoder.config.max_rows, model.decoder.config.max_cols
 
-        tasks = generate_tasks(
-            num_tasks=config.num_eval_tasks,
-            num_pairs=config.task_generator.num_pairs,
-            num_rows=config.task_generator.num_rows,
-            num_cols=config.task_generator.num_cols,
-            pattern_size=config.task_generator.pattern_size,
-            seed=config.seed,
-        )
+        tasks = make_tasks(config.task_generator, config.num_eval_tasks, seed=config.seed)
         base_key = jax.random.PRNGKey(config.seed)
 
         overall = tqdm(
@@ -152,14 +161,17 @@ def main(argv=None) -> int:
             # on its first batch and is reused for the rest (see
             # src/lpn_exp/test_time_adapt.py), so the first batch's
             # elapsed_seconds includes that one-time compile.
-            evaluate = build_condition_evaluator(model, frozen_params, max_rows, max_cols, condition, config)
+            evaluate = build_condition_evaluator(
+                model, frozen_params, max_rows, max_cols, condition, config, record_trajectory=condition != "mean"
+            )
+            adapted_params = num_adapted_params(model, frozen_params, condition, config)
             for i in range(0, len(remaining), config.batch_size):
                 batch = remaining[i : i + config.batch_size]
                 start = time.time()
                 results = evaluate(batch, [jax.random.fold_in(base_key, task.task_id) for task in batch])
                 elapsed = (time.time() - start) / len(batch)  # per task, amortized over the batch
-                for task, (round_accuracy, round_pixel_correctness) in zip(batch, results):
-                    accuracy = sum(round_accuracy) / len(round_accuracy)
+                for task, result in zip(batch, results):
+                    accuracy = sum(result["round_accuracy"]) / len(result["round_accuracy"])
                     write_metric(
                         metrics_path,
                         {
@@ -167,11 +179,15 @@ def main(argv=None) -> int:
                             "task_id": task.task_id,
                             "condition": condition,
                             "accuracy": accuracy,
-                            "pixel_correctness": sum(round_pixel_correctness) / len(round_pixel_correctness),
-                            "round_accuracy": round_accuracy,
-                            "round_pixel_correctness": round_pixel_correctness,
+                            "pixel_correctness": sum(result["round_pixel_correctness"])
+                            / len(result["round_pixel_correctness"]),
+                            # round_accuracy, round_pixel_correctness, and for
+                            # adaptation conditions traj_* / best_step
+                            **result,
                             "round_is_clean": clean_round_mask(task),
                             "learning_rate": config.learning_rates.get(condition),
+                            "num_steps": num_steps_for(condition, config),
+                            "num_adapted_params": adapted_params,
                             "fingerprint": fingerprints[condition],
                             "elapsed_seconds": elapsed,
                         },

@@ -138,11 +138,25 @@ adaptation condition's learning rate is tuned on its own seed's tasks
 reported over **all rounds** (the paper's protocol) and over **clean-only
 rounds**. A clean round is one whose held-out pair doesn't duplicate one of
 its own context pairs, which about 30% of Pattern-2D rounds do.
-`scripts/plot_exp4_results.py` writes the table. Runs and the sweep are
+`scripts/plot_exp4_results.py` writes the table. Each run row also stores per-step optimization
+trajectories (objective and best-so-far query accuracy, steps 0..T) and
+the number of adapted parameters, for adaptation-speed plots. Runs and the sweep are
 **resumable**: after a Colab disconnect, re-run the setup cells and the
 interrupted cell. It skips everything already saved on Drive; see
 `src/lpn_exp/resume.py`. Tasks are evaluated in batches (`batch_size`), one
-jitted call per batch. Colab-only, with its own bootstrap cell in
+jitted call per batch. Because every adaptation method solves Pattern-2D,
+there's also a **benchmark ladder** of harder task families
+(`src/lpn_exp/task_families.py`, `src/config/exp4_ladder_L*.yaml`). They still
+fit the pretrained checkpoint's 4x4, 10-color grids:
+- L1: sparse 2x2 patterns
+- L2: 3x3 patterns
+- L3: 3x3 patterns with a per-task anchor corner
+- L4: per-task color permutation
+
+Every round is well-posed: an exact solver recovers it from its context. The
+pattern levels are clean by construction. The notebook's section 7 pilots
+them with `mean` and `gradient_ascent` first. Colab-only, with its own
+bootstrap cell in
 `notebooks/exp4_test_time_tuning.ipynb` (JAX/Flax/Optax + the `lpn` repo
 itself, not `docker/requirements/`). `scripts/sync_outputs.py` (pulling
 metrics back from Drive automatically) is still a stub, shared across every

@@ -9,6 +9,7 @@ here would be actively misleading rather than convenient.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, PositiveInt, field_validator, model_validator
@@ -20,16 +21,78 @@ ADAPTATION_CONDITIONS = ("gradient_ascent", *LORA_CONDITION_TARGETS)
 KNOWN_CONDITIONS = ("mean", *ADAPTATION_CONDITIONS)
 
 
+# The pretrained checkpoint's grid size (its max_rows/max_cols). Every task
+# family must produce exactly this, since the model can't read or emit
+# anything bigger and only ever saw full-size grids in training.
+CHECKPOINT_GRID_SIZE = 4
+
+
 class TaskGeneratorConfig(BaseModel):
-    """Mirrors the pretrained checkpoint's own task_generator block (PATTERN,
-    pattern_size=2, num_rows=num_cols=4) so the generated eval tasks match the
-    distribution the model was actually trained on.
+    """Which tasks to generate (see src/lpn_exp/task_families.py).
+
+    `lpn_pattern` (the default) is lpn's own Pattern-2D generator -- with the
+    defaults below it mirrors the checkpoint's own task_generator block
+    (PATTERN, pattern_size=2, num_rows=num_cols=4), the distribution the model
+    was trained on. The other families are our harder benchmark ladder:
+    `pattern` (our pattern generator: any size that fits, sparse patterns via
+    `pattern_density`, a per-task `anchor` corner, and repeat-free marker
+    positions so every round is clean) and `color_permutation` (random grids
+    recolored by a per-task color mapping over `num_colors` colors).
     """
 
+    family: Literal["lpn_pattern", "pattern", "color_permutation"] = "lpn_pattern"
     num_pairs: int = 4
     num_rows: int = 4
     num_cols: int = 4
     pattern_size: int = 2
+    pattern_density: float = 1.0
+    anchor: Literal["top_left", "random_corner"] = "top_left"
+    num_colors: int = 4
+
+    @model_validator(mode="after")
+    def _check_family(self) -> TaskGeneratorConfig:
+        if (self.num_rows, self.num_cols) != (CHECKPOINT_GRID_SIZE, CHECKPOINT_GRID_SIZE):
+            raise ValueError(
+                f"Grids must be {CHECKPOINT_GRID_SIZE}x{CHECKPOINT_GRID_SIZE}, the pretrained checkpoint's size; "
+                f"got {self.num_rows}x{self.num_cols}"
+            )
+        if self.num_pairs < 2:
+            raise ValueError("num_pairs must be at least 2 (one held out, the rest as context)")
+        if self.family == "lpn_pattern" and (self.pattern_density != 1.0 or self.anchor != "top_left"):
+            raise ValueError("lpn_pattern supports only pattern_density=1.0 and anchor=top_left; use family=pattern")
+        if self.family in ("lpn_pattern", "pattern") and not 1 <= self.pattern_size < min(self.num_rows, self.num_cols):
+            raise ValueError(f"pattern_size must be in [1, {min(self.num_rows, self.num_cols) - 1}]")
+        if self.family == "pattern":
+            if not 0.0 < self.pattern_density <= 1.0:
+                raise ValueError("pattern_density must be in (0, 1]")
+            positions = (self.num_rows - self.pattern_size + 1) * (self.num_cols - self.pattern_size + 1)
+            if self.num_pairs > positions:
+                raise ValueError(
+                    f"{self.num_pairs} pairs need {self.num_pairs} distinct marker positions, but a "
+                    f"{self.pattern_size}x{self.pattern_size} pattern has only {positions} in a "
+                    f"{self.num_rows}x{self.num_cols} grid"
+                )
+        if self.family == "color_permutation" and not 1 <= self.num_colors <= 9:
+            raise ValueError("num_colors must be in [1, 9]")
+        return self
+
+    def fingerprint_fields(self) -> dict:
+        """The fields that determine this family's tasks, for resume
+        fingerprints. `lpn_pattern` keeps exactly its original four fields,
+        so rows written before the other families existed still match.
+        """
+        common = {"num_pairs": self.num_pairs, "num_rows": self.num_rows, "num_cols": self.num_cols}
+        if self.family == "lpn_pattern":
+            return {**common, "pattern_size": self.pattern_size}
+        if self.family == "pattern":
+            return {
+                "family": self.family,
+                **common,
+                "pattern_size": self.pattern_size,
+                "pattern_density": self.pattern_density,
+                "anchor": self.anchor,
+            }
+        return {"family": self.family, **common, "num_colors": self.num_colors}
 
 
 class GradientAscentConfig(BaseModel):

@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from eval.metrics import write_metric
 from lpn_exp.config import ADAPTATION_CONDITIONS, Exp4Config
 from lpn_exp.lr_sweep import select_best_learning_rates, summarize_sweep
-from lpn_exp.resume import completed_runs, read_jsonl_rows, run_fingerprint
+from lpn_exp.resume import SWEEP_ALGORITHM_VERSION, completed_runs, read_jsonl_rows, run_fingerprint
 from utils.logging_utils import get_logger, quiet_console, silence_library_noise
 
 silence_library_noise()
@@ -64,7 +64,9 @@ def main(argv=None) -> int:
     rows_path = output_dir / "lr_sweep.jsonl"
 
     fingerprints = {
-        (c, lr): run_fingerprint(config, c, sweep.seed, lr) for c in conditions for lr in sweep.learning_rates
+        (c, lr): run_fingerprint(config, c, sweep.seed, lr, version=SWEEP_ALGORITHM_VERSION)
+        for c in conditions
+        for lr in sweep.learning_rates
     }
     wanted = set(fingerprints.values())
     rows = [row for row in read_jsonl_rows(rows_path) if row.get("fingerprint") in wanted]
@@ -92,20 +94,14 @@ def main(argv=None) -> int:
             from tqdm.auto import tqdm
 
             from lpn_exp.checkpoint import load_pretrained
-            from lpn_exp.pattern2d_tasks import clean_round_mask, generate_tasks
+            from lpn_exp.pattern2d_tasks import clean_round_mask
+            from lpn_exp.task_families import make_tasks
             from lpn_exp.test_time_adapt import build_condition_evaluator
 
             model, frozen_params = load_pretrained(config.checkpoint_repo, config.checkpoint_name)
             max_rows, max_cols = model.decoder.config.max_rows, model.decoder.config.max_cols
 
-            tasks = generate_tasks(
-                num_tasks=sweep.num_tasks,
-                num_pairs=config.task_generator.num_pairs,
-                num_rows=config.task_generator.num_rows,
-                num_cols=config.task_generator.num_cols,
-                pattern_size=config.task_generator.pattern_size,
-                seed=sweep.seed,
-            )
+            tasks = make_tasks(config.task_generator, sweep.num_tasks, seed=sweep.seed)
             base_key = jax.random.PRNGKey(sweep.seed)
 
             overall = tqdm(
@@ -127,14 +123,14 @@ def main(argv=None) -> int:
                 for i in range(0, len(remaining), config.batch_size):
                     batch = remaining[i : i + config.batch_size]
                     results = evaluate(batch, [jax.random.fold_in(base_key, task.task_id) for task in batch])
-                    for task, (round_accuracy, round_pixel_correctness) in zip(batch, results):
+                    for task, result in zip(batch, results):
                         row = {
                             "experiment": config.experiment,
                             "condition": condition,
                             "learning_rate": lr,
                             "task_id": task.task_id,
-                            "round_accuracy": round_accuracy,
-                            "round_pixel_correctness": round_pixel_correctness,
+                            "round_accuracy": result["round_accuracy"],
+                            "round_pixel_correctness": result["round_pixel_correctness"],
                             "round_is_clean": clean_round_mask(task),
                             "fingerprint": fingerprints[(condition, lr)],
                         }
